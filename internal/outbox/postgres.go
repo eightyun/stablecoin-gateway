@@ -2,19 +2,20 @@ package outbox
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // PostgreSQLStore 使用 PostgreSQL 管理 Outbox 租约和状态。
 type PostgreSQLStore struct {
-	db *sql.DB
+	db *pgxpool.Pool
 }
 
 // NewPostgreSQLStore 创建 PostgreSQL Outbox Store。
-func NewPostgreSQLStore(db *sql.DB) (*PostgreSQLStore, error) {
+func NewPostgreSQLStore(db *pgxpool.Pool) (*PostgreSQLStore, error) {
 	if db == nil {
 		return nil, ErrStoreRequired
 	}
@@ -23,7 +24,7 @@ func NewPostgreSQLStore(db *sql.DB) (*PostgreSQLStore, error) {
 
 // Claim 使用行锁跳过其他 Worker 已领取的任务，并接管过期租约。
 func (store *PostgreSQLStore) Claim(ctx context.Context, workerID string, limit int, leaseDuration time.Duration) ([]Event, error) {
-	rows, err := store.db.QueryContext(ctx, `
+	rows, err := store.db.Query(ctx, `
 		WITH candidates AS (
 			SELECT id
 			FROM outbox_events
@@ -103,15 +104,12 @@ func (store *PostgreSQLStore) updateLeasedEvent(
 ) error {
 	queryArguments := []any{eventID, workerID}
 	queryArguments = append(queryArguments, arguments...)
-	result, err := store.db.ExecContext(ctx, query, queryArguments...)
+	result, err := store.db.Exec(ctx, query, queryArguments...)
 	if err != nil {
 		return fmt.Errorf("更新 Outbox 事件: %w", err)
 	}
 
-	affectedRows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("读取 Outbox 更新结果: %w", err)
-	}
+	affectedRows := result.RowsAffected()
 	if affectedRows == 0 {
 		return ErrLeaseLost
 	}
