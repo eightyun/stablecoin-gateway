@@ -18,6 +18,8 @@ var (
 	ErrDatabaseRequired  = errors.New("数据库连接不能为空")
 	ErrInvalidCursor     = errors.New("扫描游标配置无效")
 	ErrAnchorConflict    = errors.New("扫描起点与已有锚点不一致")
+	ErrContractConflict  = errors.New("扫描合约与已有绑定不一致")
+	ErrContractUnbound   = errors.New("已推进的扫描游标未绑定合约")
 	ErrLeaseUnavailable  = errors.New("扫描游标租约不可用")
 	ErrLeaseLost         = errors.New("扫描游标租约已失效")
 	ErrInvalidBlock      = errors.New("区块与扫描游标不连续")
@@ -44,6 +46,34 @@ func NewCursorStore(db *pgxpool.Pool) (*CursorStore, error) {
 		return nil, ErrDatabaseRequired
 	}
 	return &CursorStore{db: db}, nil
+}
+
+// BindContract 在游标尚未推进时绑定目标合约，防止配置漂移导致漏扫。
+func (store *CursorStore) BindContract(ctx context.Context, network, contract string) error {
+	if strings.TrimSpace(network) == "" || strings.TrimSpace(contract) == "" {
+		return ErrInvalidCursor
+	}
+	_, err := store.db.Exec(ctx, `
+		UPDATE chain_scan_cursors
+		SET tracked_contract = $2, updated_at = clock_timestamp()
+		WHERE network = $1 AND tracked_contract IS NULL AND next_height = start_height
+	`, network, contract)
+	if err != nil {
+		return fmt.Errorf("绑定扫描合约: %w", err)
+	}
+	var bound *string
+	if err := store.db.QueryRow(ctx, `
+		SELECT tracked_contract FROM chain_scan_cursors WHERE network = $1
+	`, network).Scan(&bound); err != nil {
+		return fmt.Errorf("核对扫描合约: %w", err)
+	}
+	if bound == nil {
+		return ErrContractUnbound
+	}
+	if *bound != contract {
+		return ErrContractConflict
+	}
+	return nil
 }
 
 // Ensure 只在首次启动时创建游标；已有游标必须与配置的扫描锚点一致。

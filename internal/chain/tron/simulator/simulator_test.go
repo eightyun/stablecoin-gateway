@@ -33,6 +33,9 @@ func TestBlockReadingAndSolidification(t *testing.T) {
 	if err != nil || solidified.Height != 0 {
 		t.Fatalf("SolidifiedHead() = %+v, %v", solidified, err)
 	}
+	if _, err := chain.SolidifiedBlockByHeight(context.Background(), 1); !errors.Is(err, tron.ErrBlockNotFound) {
+		t.Fatalf("未固化区块不应可读: %v", err)
+	}
 
 	// 按高度查询可由调用方乱序执行，重复查询必须返回同一事实。
 	for _, height := range []uint64{2, 1, 2} {
@@ -59,6 +62,10 @@ func TestBlockReadingAndSolidification(t *testing.T) {
 	}
 	if err := chain.Solidify(1); err != nil {
 		t.Fatalf("Solidify() error = %v", err)
+	}
+	finalizedBlock, err := chain.SolidifiedBlockByHeight(context.Background(), 1)
+	if err != nil || finalizedBlock.Header.Hash != "block-1" {
+		t.Fatalf("已固化区块读取 = %+v, %v", finalizedBlock, err)
 	}
 	state, err = chain.Transaction(context.Background(), "tx-1")
 	if err != nil || !state.Solidified {
@@ -161,6 +168,7 @@ func TestRPCFailureIsNotNotFound(t *testing.T) {
 		{"Head", simulator.FailHead, func() error { _, err := chain.Head(context.Background()); return err }},
 		{"SolidifiedHead", simulator.FailSolidifiedHead, func() error { _, err := chain.SolidifiedHead(context.Background()); return err }},
 		{"BlockByHeight", simulator.FailBlockByHeight, func() error { _, err := chain.BlockByHeight(context.Background(), 0); return err }},
+		{"SolidifiedBlockByHeight", simulator.FailSolidifiedBlockByHeight, func() error { _, err := chain.SolidifiedBlockByHeight(context.Background(), 0); return err }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if err := chain.FailNext(test.point, timeout); err != nil {

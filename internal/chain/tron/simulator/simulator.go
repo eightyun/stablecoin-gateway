@@ -32,6 +32,7 @@ const (
 	FailTransaction
 	FailBroadcastBeforeAccept
 	FailBroadcastAfterAccept
+	FailSolidifiedBlockByHeight
 )
 
 // Simulator 保留一条可替换未固化后缀的规范链。
@@ -45,6 +46,7 @@ type Simulator struct {
 }
 
 var _ tron.Reader = (*Simulator)(nil)
+var _ tron.FinalizedReader = (*Simulator)(nil)
 var _ tron.Broadcaster = (*Simulator)(nil)
 
 // New 创建含创世块的模拟链。相同输入和操作序列产生相同结果。
@@ -106,7 +108,7 @@ func (simulator *Simulator) Solidify(height uint64) error {
 
 // FailNext 使指定位置的下一次操作返回错误；同一位置的故障按添加顺序消费。
 func (simulator *Simulator) FailNext(point FailurePoint, failure error) error {
-	if point < FailHead || point > FailBroadcastAfterAccept || failure == nil {
+	if point < FailHead || point > FailSolidifiedBlockByHeight || failure == nil {
 		return ErrInvalidFailurePoint
 	}
 	simulator.mu.Lock()
@@ -143,6 +145,19 @@ func (simulator *Simulator) BlockByHeight(ctx context.Context, height uint64) (t
 		return tron.Block{}, err
 	}
 	if height >= uint64(len(simulator.blocks)) {
+		return tron.Block{}, tron.ErrBlockNotFound
+	}
+	return cloneBlock(simulator.blocks[height]), nil
+}
+
+// SolidifiedBlockByHeight 仅返回已经固化的区块。
+func (simulator *Simulator) SolidifiedBlockByHeight(ctx context.Context, height uint64) (tron.Block, error) {
+	simulator.mu.Lock()
+	defer simulator.mu.Unlock()
+	if err := simulator.readError(ctx, FailSolidifiedBlockByHeight); err != nil {
+		return tron.Block{}, err
+	}
+	if height > simulator.solidified {
 		return tron.Block{}, tron.ErrBlockNotFound
 	}
 	return cloneBlock(simulator.blocks[height]), nil

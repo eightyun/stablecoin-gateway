@@ -85,6 +85,12 @@ type Reader interface {
 	Transaction(ctx context.Context, transactionID string) (TransactionState, error)
 }
 
+// FinalizedReader 只暴露已固化链头与区块，供资金事件扫描器使用。
+type FinalizedReader interface {
+	SolidifiedHead(ctx context.Context) (Header, error)
+	SolidifiedBlockByHeight(ctx context.Context, height uint64) (Block, error)
+}
+
 // Broadcaster 只负责将已签名交易交给节点。nil 错误只表示节点已接收，不代表执行成功。
 // 错误可能发生在节点接收前或接收后；调用方必须按原交易 ID 查询，而不能直接重建付款。
 type Broadcaster interface {
