@@ -265,6 +265,50 @@ func TestStoreRejectsIntentWhenLedgerAccountIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestStoreCreatesPoolIntentAndReturnsMerchantBalance(t *testing.T) {
+	store, pool, fixture := newDepositFixture(t)
+	ctx := context.Background()
+	addressID := randomUUID(t)
+	if _, err := store.RegisterAddress(ctx, Address{
+		ID: addressID, MerchantID: fixture.merchantID, AssetID: fixture.assetID, Address: fixture.address,
+	}); err != nil {
+		t.Fatalf("RegisterAddress() error = %v", err)
+	}
+	request := PoolIntentRequest{
+		ID: randomUUID(t), MerchantID: fixture.merchantID, AssetID: fixture.assetID,
+		IdempotencyKey: "pool-idem", MerchantReference: "pool-order",
+		ExpectedAmount: "250", ExpiresIn: 10 * time.Minute,
+	}
+	created, err := store.CreateIntentFromPool(ctx, request)
+	if err != nil || !created.Created || created.Intent.DepositAddress != fixture.address {
+		t.Fatalf("CreateIntentFromPool() = %+v, %v", created, err)
+	}
+	retry := request
+	retry.ID = randomUUID(t)
+	retried, err := store.CreateIntentFromPool(ctx, retry)
+	if err != nil || retried.Created || retried.Intent.ID != created.Intent.ID {
+		t.Fatalf("重复 CreateIntentFromPool() = %+v, %v", retried, err)
+	}
+	queried, err := store.GetIntent(ctx, fixture.merchantID, created.Intent.ID)
+	if err != nil || queried.ID != created.Intent.ID {
+		t.Fatalf("GetIntent() = %+v, %v", queried, err)
+	}
+	balances, err := store.ListBalances(ctx, fixture.merchantID)
+	if err != nil || len(balances) != 1 || balances[0].Available != "0" {
+		t.Fatalf("ListBalances() = %+v, %v", balances, err)
+	}
+
+	insertChainEvent(t, pool, fixture, "tx-pool", 0, 1, time.Now().Add(time.Minute), "250")
+	matched, err := store.MatchNext(ctx)
+	if err != nil || !matched.Credited {
+		t.Fatalf("MatchNext() = %+v, %v", matched, err)
+	}
+	balances, err = store.ListBalances(ctx, fixture.merchantID)
+	if err != nil || len(balances) != 1 || balances[0].Available != "250" {
+		t.Fatalf("入账后 ListBalances() = %+v, %v", balances, err)
+	}
+}
+
 type depositFixture struct {
 	network            string
 	contract           string

@@ -10,6 +10,9 @@ import (
 	"syscall"
 
 	"github.com/eightyun/stablecoin-gateway/internal/config"
+	"github.com/eightyun/stablecoin-gateway/internal/database"
+	"github.com/eightyun/stablecoin-gateway/internal/deposit"
+	"github.com/eightyun/stablecoin-gateway/internal/merchantauth"
 	httptransport "github.com/eightyun/stablecoin-gateway/internal/transport/http"
 )
 
@@ -21,19 +24,44 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.Load()
+	cfg, err := config.LoadAPI()
 	if err != nil {
 		return err
 	}
 
-	server := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           httptransport.NewHandler(),
-		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	databaseConfig := database.DefaultConfig(cfg.DatabaseURL, "gateway-api")
+	pool, err := database.Open(ctx, databaseConfig)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	keyring, err := merchantauth.NewKeyring(cfg.APIKeyEncryptionKeys, cfg.APIKeyActiveVersion)
+	if err != nil {
+		return err
+	}
+	authStore, err := merchantauth.NewStore(pool)
+	if err != nil {
+		return err
+	}
+	authenticator, err := merchantauth.NewAuthenticator(authStore, keyring, cfg.AuthClockSkew)
+	if err != nil {
+		return err
+	}
+	depositStore, err := deposit.NewStore(pool)
+	if err != nil {
+		return err
+	}
+	handler, err := httptransport.NewHandler(authenticator, depositStore, cfg.MaxRequestBodyBytes)
+	if err != nil {
+		return err
+	}
+	server := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+	}
 
 	errCh := make(chan error, 1)
 	go func() {

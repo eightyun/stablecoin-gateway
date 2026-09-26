@@ -23,8 +23,12 @@ Implemented components:
 - Deposit addresses, deposit intents, and chain-event matching model
 - Standalone deposit matching and intent-expiration worker
 - Atomic double-entry posting and `deposit.confirmed` Outbox events for exact deposits
+- HMAC-SHA256 merchant authentication with clock-skew validation and persistent nonce replay protection
+- Encrypted merchant API secrets with versioned key rotation
+- Atomic address-pool allocation and idempotent deposit-intent creation
+- Merchant deposit lookup and available-balance APIs
 
-Not yet implemented: merchant APIs, webhook delivery, payouts, wallet sweeping, risk screening, reconciliation, and production key infrastructure.
+Not yet implemented: webhook delivery, payouts, wallet sweeping, risk screening, reconciliation, and production wallet-signing infrastructure.
 
 ## Local Development
 
@@ -33,9 +37,16 @@ Requirements:
 - Go 1.23 or newer
 - PostgreSQL
 
-Start the API:
+Generate an API-secret encryption key and start the API:
 
 ```bash
+# Generate once and persist the result in a secrets manager
+openssl rand -base64 32
+
+export GATEWAY_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway?sslmode=disable'
+export GATEWAY_API_KEY_ENCRYPTION_KEYS='{"v1":"REPLACE_WITH_THE_PERSISTED_BASE64_KEY"}'
+export GATEWAY_API_KEY_ACTIVE_VERSION='v1'
+
 go run ./cmd/gateway-api
 curl http://127.0.0.1:8080/healthz
 ```
@@ -46,6 +57,41 @@ Apply database migrations:
 export GATEWAY_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway?sslmode=disable'
 go run ./cmd/gateway-migrate up
 ```
+
+Create API credentials for an existing active merchant:
+
+```bash
+go run ./cmd/gateway-admin create-api-key \
+  --merchant-id '00000000-0000-0000-0000-000000000000' \
+  --name 'production'
+```
+
+The secret is returned only once. PostgreSQL stores only AES-256-GCM ciphertext. Existing secrets cannot be recovered if the master key is lost, so production deployments must persist and inject it through a secrets manager.
+
+## Merchant API
+
+Available endpoints:
+
+- `POST /v1/deposits`: idempotently create a deposit intent from the merchant's address pool
+- `GET /v1/deposits/{id}`: retrieve deposit status
+- `GET /v1/balances`: retrieve available balances by asset
+
+Deposit creation requires `Idempotency-Key`. Amounts are decimal integer strings in the asset's smallest unit. For example, 1 USDT with 6 decimals is `"1000000"`.
+
+Every merchant request requires:
+
+- `X-Gateway-Key`
+- `X-Gateway-Timestamp`: Unix seconds
+- `X-Gateway-Nonce`: a 16–128 character URL-safe random value, unique per API key
+- `X-Gateway-Signature`: lowercase hexadecimal HMAC-SHA256
+
+The canonical string is:
+
+```text
+UPPERCASE_METHOD\nREQUEST_URI\nTIMESTAMP\nNONCE\nSHA256_HEX(BODY)
+```
+
+`REQUEST_URI` includes the query string. The server accepts a five-minute clock skew by default and atomically consumes the nonce after signature verification.
 
 Before starting the TRON indexer, configure the node, asset contract, initial scan height, and its parent block hash using [.env.example](.env.example), then run:
 
