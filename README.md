@@ -34,6 +34,7 @@
 - 带审计记录的出款审批，以及拒绝时的原子余额解冻
 - 带租约和栅栏令牌的出款签名队列，以及隔离签名器接口
 - HTTPS 远程签名器客户端与 TRON FullNode 广播适配器
+- 签名交易与付款地址、合约、收款地址、金额、费用及有效期的本地语义绑定
 - 带租约的出款广播与确认 Worker，广播结果不确定时按原 txID 恢复
 - 基于 SolidityNode 固化交易与 Receipt 的终态确认
 - 成功出款原子结算、失败或安全过期出款原子解冻
@@ -148,10 +149,12 @@ UPPERCASE_METHOD\nREQUEST_URI\nTIMESTAMP\nNONCE\nSHA256_HEX(BODY)
 ```bash
 export GATEWAY_PAYOUT_SIGNER_URL='https://signer.internal.example'
 export GATEWAY_PAYOUT_SIGNER_BEARER_TOKEN='从密钥管理服务注入'
+export GATEWAY_PAYOUT_SIGNER_ADDRESS='专用热钱包地址'
+export GATEWAY_PAYOUT_SIGNER_MAX_FEE_LIMIT='100000000'
 go run ./cmd/gateway-payout-signing-worker
 ```
 
-远程签名服务必须实现 `POST /v1/tron/transfers:sign`，按 `Idempotency-Key` 幂等返回同一笔完整签名交易。生产环境应通过 mTLS 服务网格或等价工作负载身份保护该 HTTPS 链路；Bearer Token 仍必须从密钥管理服务注入，不能写入仓库。
+远程签名服务必须实现 `POST /v1/tron/transfers:sign`，按 `Idempotency-Key` 幂等返回同一笔完整签名交易。Worker 会再次解析签名交易，逐项核对付款地址、TRC20 合约、收款地址、金额、`fee_limit` 和有效期，不能只信任 signer 返回的 txID。生产环境应通过 mTLS 服务网格或等价工作负载身份保护该 HTTPS 链路；Bearer Token 仍必须从密钥管理服务注入，不能写入仓库。
 
 配置 FullNode、SolidityNode 并启动出款执行 Worker：
 

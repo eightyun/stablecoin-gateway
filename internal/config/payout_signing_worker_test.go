@@ -10,13 +10,16 @@ func TestLoadPayoutSigningWorker(t *testing.T) {
 	t.Setenv("GATEWAY_DATABASE_URL", "postgres://gateway:test@localhost/gateway")
 	t.Setenv("GATEWAY_PAYOUT_SIGNER_URL", "https://signer.example")
 	t.Setenv("GATEWAY_PAYOUT_SIGNER_BEARER_TOKEN", "secret")
+	t.Setenv("GATEWAY_PAYOUT_SIGNER_ADDRESS", "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb")
+	t.Setenv("GATEWAY_PAYOUT_SIGNER_MAX_FEE_LIMIT", "100000000")
 	t.Setenv("GATEWAY_PAYOUT_SIGNING_WORKER_ID", "signer-worker-1")
 	config, err := LoadPayoutSigningWorker()
 	if err != nil {
 		t.Fatalf("LoadPayoutSigningWorker() error = %v", err)
 	}
 	if config.OperationTimeout != 20*time.Second || config.LeaseDuration != time.Minute ||
-		config.SignerMaxResponseBytes != 2<<20 || config.WorkerID != "signer-worker-1" {
+		config.SignerMaxResponseBytes != 2<<20 || config.SignerMaxLifetime != 10*time.Minute ||
+		config.SignerMaxFeeLimit != 100000000 || config.WorkerID != "signer-worker-1" {
 		t.Fatalf("LoadPayoutSigningWorker() = %+v", config)
 	}
 }
@@ -36,6 +39,8 @@ func TestLoadPayoutSigningWorkerRejectsUnsafeRelationships(t *testing.T) {
 			t.Setenv("GATEWAY_DATABASE_URL", "postgres://gateway:test@localhost/gateway")
 			t.Setenv("GATEWAY_PAYOUT_SIGNER_URL", "https://signer.example")
 			t.Setenv("GATEWAY_PAYOUT_SIGNER_BEARER_TOKEN", "secret")
+			t.Setenv("GATEWAY_PAYOUT_SIGNER_ADDRESS", "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb")
+			t.Setenv("GATEWAY_PAYOUT_SIGNER_MAX_FEE_LIMIT", "100000000")
 			t.Setenv(test.env, test.value)
 			if _, err := LoadPayoutSigningWorker(); err == nil {
 				t.Fatal("LoadPayoutSigningWorker() 未拒绝无效配置")
@@ -48,6 +53,8 @@ func clearPayoutSigningEnvironment(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
 		"GATEWAY_DATABASE_URL", "GATEWAY_PAYOUT_SIGNER_URL", "GATEWAY_PAYOUT_SIGNER_BEARER_TOKEN",
+		"GATEWAY_PAYOUT_SIGNER_ADDRESS", "GATEWAY_PAYOUT_SIGNER_MAX_FEE_LIMIT",
+		"GATEWAY_PAYOUT_SIGNER_MAX_TRANSACTION_LIFETIME",
 		"GATEWAY_PAYOUT_SIGNING_WORKER_ID", "GATEWAY_PAYOUT_SIGNER_MAX_RESPONSE_BYTES",
 		"GATEWAY_PAYOUT_SIGNING_OPERATION_TIMEOUT", "GATEWAY_PAYOUT_SIGNING_LEASE_DURATION",
 		"GATEWAY_PAYOUT_SIGNING_IDLE_INTERVAL", "GATEWAY_PAYOUT_SIGNING_RETRY_MIN",

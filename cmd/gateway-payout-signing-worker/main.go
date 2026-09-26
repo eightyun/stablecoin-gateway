@@ -41,7 +41,9 @@ func run(ctx context.Context) error {
 	}
 	signer, err := signhttp.New(signhttp.Config{
 		BaseURL: cfg.SignerURL, BearerToken: cfg.SignerBearerToken,
-		MaxResponseBytes: cfg.SignerMaxResponseBytes,
+		ExpectedOwnerAddress: cfg.SignerAddress, MaxFeeLimit: cfg.SignerMaxFeeLimit,
+		MaxTransactionLifetime: cfg.SignerMaxLifetime,
+		MaxResponseBytes:       cfg.SignerMaxResponseBytes,
 	}, nil)
 	if err != nil {
 		return err

@@ -34,6 +34,7 @@ Implemented components:
 - Audited payout review with atomic unfreezing on rejection
 - Leased payout-signing queue with fencing tokens and an isolated signer interface
 - HTTPS remote-signer client and TRON FullNode broadcast adapter
+- Local semantic binding of signed transactions to owner, contract, destination, amount, fee, and lifetime
 - Leased payout broadcast and confirmation worker with recovery by the original txID
 - Final payout confirmation from SolidityNode transactions and receipts
 - Atomic settlement on success and atomic fund release on safe failure or expiry
@@ -148,10 +149,12 @@ Configure and start the payout-signing worker:
 ```bash
 export GATEWAY_PAYOUT_SIGNER_URL='https://signer.internal.example'
 export GATEWAY_PAYOUT_SIGNER_BEARER_TOKEN='injected-by-your-secrets-manager'
+export GATEWAY_PAYOUT_SIGNER_ADDRESS='dedicated-hot-wallet-address'
+export GATEWAY_PAYOUT_SIGNER_MAX_FEE_LIMIT='100000000'
 go run ./cmd/gateway-payout-signing-worker
 ```
 
-The remote service must implement `POST /v1/tron/transfers:sign` and return the same complete signed transaction for repeated `Idempotency-Key` values. Production deployments should protect this HTTPS path with a mutual-TLS service mesh or equivalent workload identity. The bearer token must still be injected from a secrets manager.
+The remote service must implement `POST /v1/tron/transfers:sign` and return the same complete signed transaction for repeated `Idempotency-Key` values. The worker parses the result again and binds it to the expected owner, TRC20 contract, destination, amount, `fee_limit`, and lifetime instead of trusting only the returned txID. Production deployments should protect this HTTPS path with a mutual-TLS service mesh or equivalent workload identity. The bearer token must still be injected from a secrets manager.
 
 Configure the FullNode and SolidityNode endpoints, then start the payout execution worker:
 

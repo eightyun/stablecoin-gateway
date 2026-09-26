@@ -17,8 +17,10 @@ import (
 )
 
 const (
-	defaultMaxResponseBytes int64 = 2 << 20
-	maxSignedPayloadBytes         = 1 << 20
+	defaultMaxResponseBytes  int64 = 2 << 20
+	maxSignedPayloadBytes          = 1 << 20
+	minimumRemainingLifetime       = 15 * time.Second
+	maximumFutureSkew              = 30 * time.Second
 )
 
 var (
@@ -30,17 +32,23 @@ var (
 
 // Config 是远程签名服务连接配置。
 type Config struct {
-	BaseURL          string
-	BearerToken      string
-	MaxResponseBytes int64
+	BaseURL                string
+	BearerToken            string
+	ExpectedOwnerAddress   string
+	MaxFeeLimit            int64
+	MaxTransactionLifetime time.Duration
+	MaxResponseBytes       int64
 }
 
 // Client 只传递语义化转账请求，不持有私钥。
 type Client struct {
-	endpoint         string
-	bearerToken      string
-	maxResponseBytes int64
-	httpClient       *http.Client
+	endpoint               string
+	bearerToken            string
+	maxResponseBytes       int64
+	expectedOwnerAddress   string
+	maxFeeLimit            int64
+	maxTransactionLifetime time.Duration
+	httpClient             *http.Client
 }
 
 var _ tron.TransferSigner = (*Client)(nil)
@@ -49,8 +57,11 @@ var _ tron.TransferSigner = (*Client)(nil)
 func New(config Config, httpClient *http.Client) (*Client, error) {
 	baseURL, err := url.Parse(strings.TrimSpace(config.BaseURL))
 	token := strings.TrimSpace(config.BearerToken)
+	ownerAddress := strings.TrimSpace(config.ExpectedOwnerAddress)
+	_, ownerErr := tron.NormalizeAddressHex(ownerAddress)
 	if err != nil || baseURL.Scheme != "https" || baseURL.Host == "" || baseURL.User != nil ||
 		baseURL.RawQuery != "" || baseURL.Fragment != "" || token == "" || len(token) > 4096 ||
+		ownerErr != nil || config.MaxFeeLimit <= 0 || config.MaxTransactionLifetime <= minimumRemainingLifetime ||
 		config.MaxResponseBytes < 0 {
 		return nil, ErrInvalidConfig
 	}
@@ -78,7 +89,9 @@ func New(config Config, httpClient *http.Client) (*Client, error) {
 	}
 	return &Client{
 		endpoint: baseURL.String(), bearerToken: token,
-		maxResponseBytes: maxResponseBytes, httpClient: &configuredHTTPClient,
+		expectedOwnerAddress: ownerAddress, maxFeeLimit: config.MaxFeeLimit,
+		maxTransactionLifetime: config.MaxTransactionLifetime,
+		maxResponseBytes:       maxResponseBytes, httpClient: &configuredHTTPClient,
 	}, nil
 }
 
@@ -129,7 +142,19 @@ func (client *Client) SignTransfer(
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return tron.SignedTransaction{}, fmt.Errorf("远程签名服务返回 HTTP %d: %w", response.StatusCode, ErrInvalidResponse)
 	}
-	return parseResponse(responseBody)
+	transaction, err := parseResponse(responseBody)
+	if err != nil {
+		return tron.SignedTransaction{}, err
+	}
+	if err := tron.ValidateSignedTransferTransaction(transaction, tron.TransferTransactionExpectation{
+		OwnerAddress: client.expectedOwnerAddress, ContractAddress: request.ContractAddress,
+		DestinationAddress: request.DestinationAddress, Amount: request.Amount, Now: time.Now().UTC(),
+		MaxFeeLimit: client.maxFeeLimit, MaxLifetime: client.maxTransactionLifetime,
+		MinRemainingLifetime: minimumRemainingLifetime, MaxFutureSkew: maximumFutureSkew,
+	}); err != nil {
+		return tron.SignedTransaction{}, ErrInvalidResponse
+	}
+	return transaction, nil
 }
 
 func parseResponse(body []byte) (tron.SignedTransaction, error) {
@@ -165,12 +190,16 @@ func normalizeRequest(request tron.TransferSignRequest) tron.TransferSignRequest
 }
 
 func validateRequest(request tron.TransferSignRequest) error {
-	if request.RequestID == "" || len(request.RequestID) > 128 || request.Network == "" || len(request.Network) > 128 ||
+	if request.RequestID == "" || len(request.RequestID) > 128 ||
+		(request.Network != "tron-nile" && request.Network != "tron-shasta" && request.Network != "tron-mainnet") ||
 		request.ContractAddress == "" || len(request.ContractAddress) > 128 || request.Amount == "" ||
 		len(request.Amount) > 19 || request.Amount[0] == '0' {
 		return ErrInvalidRequest
 	}
 	if _, err := tron.NormalizeAddress(request.DestinationAddress); err != nil {
+		return ErrInvalidRequest
+	}
+	if _, err := tron.NormalizeAddressHex(request.ContractAddress); err != nil {
 		return ErrInvalidRequest
 	}
 	for _, digit := range request.Amount {

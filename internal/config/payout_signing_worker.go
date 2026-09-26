@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/eightyun/stablecoin-gateway/internal/chain/tron"
 )
 
 const (
@@ -14,6 +16,7 @@ const (
 	defaultPayoutSigningRetryMin         = time.Second
 	defaultPayoutSigningRetryMax         = 30 * time.Second
 	defaultPayoutSignerMaxResponseBytes  = 2 << 20
+	defaultPayoutSignerMaxLifetime       = 10 * time.Minute
 )
 
 // PayoutSigningWorkerConfig 保存出款签名 Worker 与远程签名服务配置。
@@ -22,6 +25,9 @@ type PayoutSigningWorkerConfig struct {
 	WorkerID               string
 	SignerURL              string
 	SignerBearerToken      string
+	SignerAddress          string
+	SignerMaxFeeLimit      int64
+	SignerMaxLifetime      time.Duration
 	SignerMaxResponseBytes int64
 	OperationTimeout       time.Duration
 	LeaseDuration          time.Duration
@@ -41,6 +47,21 @@ func LoadPayoutSigningWorker() (PayoutSigningWorkerConfig, error) {
 		return PayoutSigningWorkerConfig{}, err
 	}
 	signerToken, err := requiredEnv("GATEWAY_PAYOUT_SIGNER_BEARER_TOKEN")
+	if err != nil {
+		return PayoutSigningWorkerConfig{}, err
+	}
+	signerAddress, err := requiredEnv("GATEWAY_PAYOUT_SIGNER_ADDRESS")
+	if err != nil {
+		return PayoutSigningWorkerConfig{}, err
+	}
+	if _, err := tron.NormalizeAddressHex(signerAddress); err != nil {
+		return PayoutSigningWorkerConfig{}, fmt.Errorf("GATEWAY_PAYOUT_SIGNER_ADDRESS: %w", err)
+	}
+	signerMaxFeeLimit, err := positiveInt64Env("GATEWAY_PAYOUT_SIGNER_MAX_FEE_LIMIT", true)
+	if err != nil {
+		return PayoutSigningWorkerConfig{}, err
+	}
+	signerMaxLifetime, err := durationFromEnv("GATEWAY_PAYOUT_SIGNER_MAX_TRANSACTION_LIFETIME", defaultPayoutSignerMaxLifetime)
 	if err != nil {
 		return PayoutSigningWorkerConfig{}, err
 	}
@@ -83,6 +104,8 @@ func LoadPayoutSigningWorker() (PayoutSigningWorkerConfig, error) {
 	return PayoutSigningWorkerConfig{
 		DatabaseURL: databaseURL, WorkerID: workerID,
 		SignerURL: signerURL, SignerBearerToken: signerToken,
+		SignerAddress: signerAddress, SignerMaxFeeLimit: signerMaxFeeLimit,
+		SignerMaxLifetime:      signerMaxLifetime,
 		SignerMaxResponseBytes: maxResponseBytes, OperationTimeout: operationTimeout,
 		LeaseDuration: leaseDuration, IdleInterval: idleInterval,
 		RetryMin: retryMin, RetryMax: retryMax,
