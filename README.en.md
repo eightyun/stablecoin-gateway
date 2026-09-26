@@ -33,9 +33,10 @@ Implemented components:
 - Merchant payout requests with TRON address validation and atomic balance freezing
 - Audited payout review with atomic unfreezing on rejection
 - Leased payout-signing queue with fencing tokens and an isolated signer interface
+- HTTPS remote-signer client and TRON FullNode broadcast adapter
 - Separate available and frozen balance reporting
 
-Not yet implemented: a remote signer adapter, automated address screening, payout broadcasting/confirmation, wallet sweeping, reconciliation, and production wallet-signing infrastructure.
+Not yet implemented: payout broadcast/confirmation workers, automated address screening, wallet sweeping, reconciliation, and the production signer service itself.
 
 ## Local Development
 
@@ -136,7 +137,17 @@ UPPERCASE_METHOD\nREQUEST_URI\nTIMESTAMP\nNONCE\nSHA256_HEX(BODY)
 
 `REQUEST_URI` includes the query string. The server accepts a five-minute clock skew by default and atomically consumes the nonce after signature verification.
 
-New payouts enter `pending_review` and move funds from `available` to `frozen`; approval moves them to `approved`. A signing worker claims jobs through database leases and calls only the private-key-free `TransferSigner` boundary. A payout reaches `ready_for_broadcast` only after one immutable signed transaction has been persisted. The repository does not yet include a remote signer or node broadcaster adapter, so no on-chain transaction is produced. The initial payout rail accepts TRON Base58Check addresses only.
+New payouts enter `pending_review` and move funds from `available` to `frozen`; approval moves them to `approved`. A signing worker claims jobs through database leases and calls only the private-key-free `TransferSigner` boundary. A payout reaches `ready_for_broadcast` only after one immutable signed transaction has been persisted. The initial payout rail accepts TRON Base58Check addresses only.
+
+Configure and start the payout-signing worker:
+
+```bash
+export GATEWAY_PAYOUT_SIGNER_URL='https://signer.internal.example'
+export GATEWAY_PAYOUT_SIGNER_BEARER_TOKEN='injected-by-your-secrets-manager'
+go run ./cmd/gateway-payout-signing-worker
+```
+
+The remote service must implement `POST /v1/tron/transfers:sign` and return the same complete signed transaction for repeated `Idempotency-Key` values. Production deployments should protect this HTTPS path with a mutual-TLS service mesh or equivalent workload identity. The bearer token must still be injected from a secrets manager. The FullNode broadcast adapter is not yet wired to an execution worker, so transactions are not broadcast automatically.
 
 ## Webhooks
 

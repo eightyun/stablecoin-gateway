@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -255,10 +256,13 @@ func TestStoreSigningLeaseTakeoverAndCompletion(t *testing.T) {
 	if err != nil || second.PayoutID != created.Payout.ID || second.LeaseEpoch != 2 {
 		t.Fatalf("接管 ClaimSigning() = %+v, %v", second, err)
 	}
-	transactionHash := sha256.Sum256([]byte(created.Payout.ID))
+	rawTransaction := []byte(created.Payout.ID)
+	transactionHash := sha256.Sum256(rawTransaction)
 	transaction := tron.SignedTransaction{
-		ID:      hex.EncodeToString(transactionHash[:]),
-		Payload: []byte(`{"txID":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
+		ID: hex.EncodeToString(transactionHash[:]),
+		Payload: []byte(`{"txID":"` + hex.EncodeToString(transactionHash[:]) +
+			`","raw_data":{"contract":[]},"raw_data_hex":"` + hex.EncodeToString(rawTransaction) +
+			`","signature":["` + strings.Repeat("a", 130) + `"]}`),
 	}
 	if err := fixture.store.CompleteSigning(context.Background(), first, transaction); !errors.Is(err, ErrSigningLeaseLost) {
 		t.Fatalf("旧租约 CompleteSigning() error = %v", err)
@@ -316,9 +320,13 @@ func drainApprovedPayouts(t *testing.T, store *Store) {
 		if err != nil {
 			t.Fatalf("清理待签名出款: %v", err)
 		}
-		sum := sha256.Sum256([]byte(claim.PayoutID))
+		rawTransaction := []byte(claim.PayoutID)
+		sum := sha256.Sum256(rawTransaction)
 		if err := store.CompleteSigning(context.Background(), claim, tron.SignedTransaction{
-			ID: hex.EncodeToString(sum[:]), Payload: []byte(`{"test":"drained"}`),
+			ID: hex.EncodeToString(sum[:]),
+			Payload: []byte(`{"txID":"` + hex.EncodeToString(sum[:]) +
+				`","raw_data":{"contract":[]},"raw_data_hex":"` + hex.EncodeToString(rawTransaction) +
+				`","signature":["` + strings.Repeat("a", 130) + `"]}`),
 		}); err != nil {
 			t.Fatalf("完成清理签名: %v", err)
 		}

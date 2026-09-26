@@ -94,7 +94,7 @@ func (store *Store) CompleteSigning(
 		return err
 	}
 	if !transactionIDPattern.MatchString(transaction.ID) || len(transaction.Payload) == 0 ||
-		len(transaction.Payload) > maxSignedTransactionBytes {
+		len(transaction.Payload) > maxSignedTransactionBytes || tron.ValidateSignedTransaction(transaction) != nil {
 		return ErrInvalidSignedTransaction
 	}
 	result, err := store.db.Exec(ctx, `

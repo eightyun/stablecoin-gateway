@@ -33,9 +33,10 @@ Gateway 是一个面向商户的生产级开源稳定币支付系统，目标覆
 - 商户出款申请、TRON 地址校验与原子余额冻结
 - 带审计记录的出款审批，以及拒绝时的原子余额解冻
 - 带租约和栅栏令牌的出款签名队列，以及隔离签名器接口
+- HTTPS 远程签名器客户端与 TRON FullNode 广播适配器
 - 可用余额与冻结余额分离查询
 
-尚未完成：远程签名器适配、自动地址筛查、出款广播/确认、归集、对账和生产钱包签名基础设施。
+尚未完成：出款广播/确认 Worker、自动地址筛查、归集、对账和生产钱包签名服务本身。
 
 ## 本地运行
 
@@ -136,7 +137,17 @@ UPPERCASE_METHOD\nREQUEST_URI\nTIMESTAMP\nNONCE\nSHA256_HEX(BODY)
 
 其中 `REQUEST_URI` 包含查询字符串。服务端默认接受前后 5 分钟时间窗，并在签名验证成功后原子消费 nonce。
 
-当前出款创建后进入 `pending_review`，资金从 `available` 转入 `frozen`；审批通过后进入 `approved`。签名 Worker 通过数据库租约领取任务，并只调用不暴露私钥的 `TransferSigner`；成功持久化唯一签名交易后才进入 `ready_for_broadcast`。仓库尚未提供远程签名器和节点广播适配，因此目前不会产生链上交易。第一条出款网络只接受 TRON Base58Check 地址。
+当前出款创建后进入 `pending_review`，资金从 `available` 转入 `frozen`；审批通过后进入 `approved`。签名 Worker 通过数据库租约领取任务，并只调用不暴露私钥的 `TransferSigner`；成功持久化唯一签名交易后才进入 `ready_for_broadcast`。广播执行 Worker 尚未完成，因此目前不会自动产生链上交易。第一条出款网络只接受 TRON Base58Check 地址。
+
+配置并启动出款签名 Worker：
+
+```bash
+export GATEWAY_PAYOUT_SIGNER_URL='https://signer.internal.example'
+export GATEWAY_PAYOUT_SIGNER_BEARER_TOKEN='从密钥管理服务注入'
+go run ./cmd/gateway-payout-signing-worker
+```
+
+远程签名服务必须实现 `POST /v1/tron/transfers:sign`，按 `Idempotency-Key` 幂等返回同一笔完整签名交易。生产环境应通过 mTLS 服务网格或等价工作负载身份保护该 HTTPS 链路；Bearer Token 仍必须从密钥管理服务注入，不能写入仓库。当前 FullNode 广播适配器尚未接入执行 Worker，因此不会自动广播。
 
 ## Webhook
 
