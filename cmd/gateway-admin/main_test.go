@@ -26,3 +26,13 @@ func TestParseCreateAPIKeyOptionsRejectsInvalidArguments(t *testing.T) {
 		}
 	}
 }
+
+func TestParseCreateWebhookEndpointOptions(t *testing.T) {
+	options, err := parseCreateWebhookEndpointOptions([]string{
+		"create-webhook-endpoint", "--merchant-id", "123e4567-e89b-12d3-a456-426614174000",
+		"--name", "orders", "--url", "https://example.com/webhooks/gateway",
+	})
+	if err != nil || options.name != "orders" || options.url == "" {
+		t.Fatalf("parseCreateWebhookEndpointOptions() = %+v, %v", options, err)
+	}
+}

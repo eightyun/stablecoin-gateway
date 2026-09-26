@@ -27,8 +27,11 @@ Gateway 是一个面向商户的生产级开源稳定币支付系统，目标覆
 - 加密保存、支持版本轮换的商户 API Secret
 - 地址池原子分配与幂等充值意图创建
 - 商户充值查询与可用余额 API
+- 基于 Transactional Outbox 的 Webhook Worker
+- Webhook HMAC 签名、指数退避、死信与逐次投递审计
+- 默认阻止私网目标、禁止重定向的 Webhook SSRF 防护
 
-尚未完成：Webhook 投递、出款、归集、风控筛查、对账和生产钱包签名基础设施。
+尚未完成：出款、归集、风控筛查、对账和生产钱包签名基础设施。
 
 ## 本地运行
 
@@ -68,6 +71,24 @@ go run ./cmd/gateway-admin create-api-key \
 
 Secret 只在创建时输出一次。数据库只保存 AES-256-GCM 密文；主密钥丢失后已有 Secret 无法恢复，生产环境必须通过密钥管理服务持久保存并注入。
 
+配置 Webhook 独立加密密钥，并为商户创建 HTTPS 端点：
+
+```bash
+# 同样只生成并持久保存一次；不要与 API Key 加密主密钥复用
+openssl rand -base64 32
+export GATEWAY_WEBHOOK_SECRET_ENCRYPTION_KEYS='{"v1":"替换为持久保存的Base64密钥"}'
+export GATEWAY_WEBHOOK_SECRET_ACTIVE_VERSION='v1'
+
+go run ./cmd/gateway-admin create-webhook-endpoint \
+  --merchant-id '00000000-0000-0000-0000-000000000000' \
+  --name 'production' \
+  --url 'https://merchant.example/webhooks/gateway'
+
+go run ./cmd/gateway-webhook-worker
+```
+
+Worker 默认拒绝私网、回环和链路本地目标，且不跟随重定向。仅在明确需要投递到可信内网时设置 `GATEWAY_WEBHOOK_ALLOW_PRIVATE_NETWORKS=true`。
+
 ## 商户 API
 
 当前接口：
@@ -92,6 +113,22 @@ UPPERCASE_METHOD\nREQUEST_URI\nTIMESTAMP\nNONCE\nSHA256_HEX(BODY)
 ```
 
 其中 `REQUEST_URI` 包含查询字符串。服务端默认接受前后 5 分钟时间窗，并在签名验证成功后原子消费 nonce。
+
+## Webhook
+
+当前投递 `deposit.confirmed`。事件信封固定为：
+
+```json
+{"id":"事件 UUID","type":"deposit.confirmed","created_at":"RFC3339 时间","data":{}}
+```
+
+请求包含 `X-Gateway-Event-ID`、`X-Gateway-Event-Type`、`X-Gateway-Event-Timestamp` 和 `X-Gateway-Signature`。签名值为：
+
+```text
+v1=HEX(HMAC_SHA256(secret, timestamp + "." + event_id + "." + raw_body))
+```
+
+只有 2xx 响应视为成功。投递采用至少一次语义；商户必须以 `X-Gateway-Event-ID` 幂等消费。失败会指数退避并在达到上限后进入死信。
 
 启动 TRON 索引器前，根据 [.env.example](.env.example) 配置节点、资产合约、扫描起点及其父区块哈希，然后运行：
 

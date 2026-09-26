@@ -23,13 +23,22 @@ func NewPostgreSQLStore(db *pgxpool.Pool) (*PostgreSQLStore, error) {
 }
 
 // Claim 使用行锁跳过其他 Worker 已领取的任务，并接管过期租约。
-func (store *PostgreSQLStore) Claim(ctx context.Context, workerID string, limit int, leaseDuration time.Duration) ([]Event, error) {
+func (store *PostgreSQLStore) Claim(
+	ctx context.Context,
+	workerID string,
+	topics []string,
+	limit int,
+	leaseDuration time.Duration,
+) ([]Event, error) {
 	rows, err := store.db.Query(ctx, `
 		WITH candidates AS (
 			SELECT id
 			FROM outbox_events
-			WHERE (status = 'pending' AND available_at <= CURRENT_TIMESTAMP)
-			   OR (status = 'processing' AND lease_until <= CURRENT_TIMESTAMP)
+			WHERE topic = ANY($4)
+			  AND (
+			      (status = 'pending' AND available_at <= CURRENT_TIMESTAMP)
+			      OR (status = 'processing' AND lease_until <= CURRENT_TIMESTAMP)
+			  )
 			ORDER BY available_at, created_at, id
 			FOR UPDATE SKIP LOCKED
 			LIMIT $1
@@ -43,7 +52,7 @@ func (store *PostgreSQLStore) Claim(ctx context.Context, workerID string, limit 
 		FROM candidates
 		WHERE event.id = candidates.id
 		RETURNING event.id, event.topic, event.payload, event.attempts, event.created_at
-	`, limit, workerID, leaseDuration.Milliseconds())
+	`, limit, workerID, leaseDuration.Milliseconds(), topics)
 	if err != nil {
 		return nil, fmt.Errorf("领取 Outbox 事件: %w", err)
 	}

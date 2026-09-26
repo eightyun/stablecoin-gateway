@@ -27,8 +27,11 @@ Implemented components:
 - Encrypted merchant API secrets with versioned key rotation
 - Atomic address-pool allocation and idempotent deposit-intent creation
 - Merchant deposit lookup and available-balance APIs
+- Transactional Outbox-based webhook worker
+- Webhook HMAC signatures, exponential backoff, dead lettering, and per-attempt delivery audit
+- Webhook SSRF protection that blocks private targets and redirects by default
 
-Not yet implemented: webhook delivery, payouts, wallet sweeping, risk screening, reconciliation, and production wallet-signing infrastructure.
+Not yet implemented: payouts, wallet sweeping, risk screening, reconciliation, and production wallet-signing infrastructure.
 
 ## Local Development
 
@@ -68,6 +71,24 @@ go run ./cmd/gateway-admin create-api-key \
 
 The secret is returned only once. PostgreSQL stores only AES-256-GCM ciphertext. Existing secrets cannot be recovered if the master key is lost, so production deployments must persist and inject it through a secrets manager.
 
+Configure a separate webhook encryption key and create an HTTPS endpoint for a merchant:
+
+```bash
+# Generate and persist this key once; do not reuse the API-key encryption master key
+openssl rand -base64 32
+export GATEWAY_WEBHOOK_SECRET_ENCRYPTION_KEYS='{"v1":"REPLACE_WITH_THE_PERSISTED_BASE64_KEY"}'
+export GATEWAY_WEBHOOK_SECRET_ACTIVE_VERSION='v1'
+
+go run ./cmd/gateway-admin create-webhook-endpoint \
+  --merchant-id '00000000-0000-0000-0000-000000000000' \
+  --name 'production' \
+  --url 'https://merchant.example/webhooks/gateway'
+
+go run ./cmd/gateway-webhook-worker
+```
+
+The worker rejects private, loopback, and link-local targets and does not follow redirects by default. Set `GATEWAY_WEBHOOK_ALLOW_PRIVATE_NETWORKS=true` only when delivering to a trusted internal network is intentional.
+
 ## Merchant API
 
 Available endpoints:
@@ -92,6 +113,22 @@ UPPERCASE_METHOD\nREQUEST_URI\nTIMESTAMP\nNONCE\nSHA256_HEX(BODY)
 ```
 
 `REQUEST_URI` includes the query string. The server accepts a five-minute clock skew by default and atomically consumes the nonce after signature verification.
+
+## Webhooks
+
+The current event type is `deposit.confirmed`. The event envelope is stable:
+
+```json
+{"id":"event UUID","type":"deposit.confirmed","created_at":"RFC3339 timestamp","data":{}}
+```
+
+Requests include `X-Gateway-Event-ID`, `X-Gateway-Event-Type`, `X-Gateway-Event-Timestamp`, and `X-Gateway-Signature`. The signature is:
+
+```text
+v1=HEX(HMAC_SHA256(secret, timestamp + "." + event_id + "." + raw_body))
+```
+
+Only 2xx responses are successful. Delivery is at least once, so merchants must consume idempotently using `X-Gateway-Event-ID`. Failures use exponential backoff and become dead letters after the configured attempt limit.
 
 Before starting the TRON indexer, configure the node, asset contract, initial scan height, and its parent block hash using [.env.example](.env.example), then run:
 

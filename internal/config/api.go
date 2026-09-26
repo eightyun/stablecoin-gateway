@@ -34,7 +34,7 @@ func LoadAPI() (APIConfig, error) {
 	if err != nil {
 		return APIConfig{}, err
 	}
-	keys, err := encryptionKeysFromEnv()
+	keys, err := encryptionKeysFromEnv("GATEWAY_API_KEY_ENCRYPTION_KEYS")
 	if err != nil {
 		return APIConfig{}, err
 	}
@@ -68,21 +68,21 @@ func LoadAPI() (APIConfig, error) {
 	}, nil
 }
 
-func encryptionKeysFromEnv() (map[string][]byte, error) {
-	raw, err := requiredEnv("GATEWAY_API_KEY_ENCRYPTION_KEYS")
+func encryptionKeysFromEnv(name string) (map[string][]byte, error) {
+	raw, err := requiredEnv(name)
 	if err != nil {
 		return nil, err
 	}
 	var encoded map[string]string
 	if err := json.Unmarshal([]byte(raw), &encoded); err != nil || len(encoded) == 0 {
-		return nil, fmt.Errorf("GATEWAY_API_KEY_ENCRYPTION_KEYS 必须是非空 JSON 对象")
+		return nil, fmt.Errorf("%s 必须是非空 JSON 对象", name)
 	}
 	keys := make(map[string][]byte, len(encoded))
 	for version, value := range encoded {
 		version = strings.TrimSpace(version)
 		decoded, decodeErr := base64.StdEncoding.DecodeString(value)
 		if version == "" || decodeErr != nil || len(decoded) != 32 {
-			return nil, fmt.Errorf("API Key 加密密钥 %q 必须是 32 字节 Base64", version)
+			return nil, fmt.Errorf("配置 %s 中的密钥 %q 必须是 32 字节 Base64", name, version)
 		}
 		keys[version] = decoded
 	}

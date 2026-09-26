@@ -23,6 +23,9 @@ func TestProcessorRunOnceMarksSucceeded(t *testing.T) {
 	if store.succeededID != "event-1" {
 		t.Fatalf("成功事件 = %q, 期望 event-1", store.succeededID)
 	}
+	if len(store.topics) != 1 || store.topics[0] != "deposit.confirmed" {
+		t.Fatalf("领取 topics = %v", store.topics)
+	}
 }
 
 func TestProcessorRunOnceSchedulesRetry(t *testing.T) {
@@ -129,6 +132,7 @@ func newTestProcessor(t *testing.T, store Store, handlers map[string]Handler) *P
 
 type fakeStore struct {
 	events      []Event
+	topics      []string
 	succeededID string
 	retryID     string
 	retryAfter  time.Duration
@@ -136,7 +140,8 @@ type fakeStore struct {
 	reason      string
 }
 
-func (store *fakeStore) Claim(context.Context, string, int, time.Duration) ([]Event, error) {
+func (store *fakeStore) Claim(_ context.Context, _ string, topics []string, _ int, _ time.Duration) ([]Event, error) {
+	store.topics = append([]string(nil), topics...)
 	return store.events, nil
 }
 

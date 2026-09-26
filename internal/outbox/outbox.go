@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -29,7 +30,7 @@ type Event struct {
 
 // Store 定义 Outbox 任务的租约和状态变更能力。
 type Store interface {
-	Claim(ctx context.Context, workerID string, limit int, leaseDuration time.Duration) ([]Event, error)
+	Claim(ctx context.Context, workerID string, topics []string, limit int, leaseDuration time.Duration) ([]Event, error)
 	MarkSucceeded(ctx context.Context, eventID, workerID string) error
 	MarkRetry(ctx context.Context, eventID, workerID string, retryAfter time.Duration, reason string) error
 	MarkDead(ctx context.Context, eventID, workerID, reason string) error
@@ -63,6 +64,7 @@ type Processor struct {
 	store    Store
 	config   Config
 	handlers map[string]Handler
+	topics   []string
 }
 
 // NewProcessor 创建 Outbox Processor。
@@ -87,13 +89,16 @@ func NewProcessor(store Store, config Config, handlers map[string]Handler) (*Pro
 	}
 
 	handlerCopy := make(map[string]Handler, len(handlers))
+	topics := make([]string, 0, len(handlers))
 	for topic, handler := range handlers {
 		if topic != "" && handler != nil {
 			handlerCopy[topic] = handler
+			topics = append(topics, topic)
 		}
 	}
+	sort.Strings(topics)
 
-	return &Processor{store: store, config: config, handlers: handlerCopy}, nil
+	return &Processor{store: store, config: config, handlers: handlerCopy, topics: topics}, nil
 }
 
 // RunOnce 领取并处理一批事件，返回实际领取数量。
@@ -101,6 +106,7 @@ func (processor *Processor) RunOnce(ctx context.Context) (int, error) {
 	events, err := processor.store.Claim(
 		ctx,
 		processor.config.WorkerID,
+		processor.topics,
 		processor.config.BatchSize,
 		processor.config.LeaseDuration,
 	)
