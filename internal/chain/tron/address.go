@@ -6,6 +6,8 @@ import (
 	"errors"
 	"math/big"
 	"strings"
+
+	"golang.org/x/crypto/sha3"
 )
 
 var ErrInvalidAddress = errors.New("TRON 地址无效")
@@ -32,6 +34,20 @@ func NormalizeAddress(value string) (string, error) {
 	return value, nil
 }
 
+// AddressFromPublicKey 从 65 字节未压缩 secp256k1 公钥生成 TRON Base58Check 地址。
+func AddressFromPublicKey(publicKey []byte) (string, error) {
+	if len(publicKey) != 65 || publicKey[0] != 0x04 {
+		return "", ErrInvalidAddress
+	}
+	hasher := sha3.NewLegacyKeccak256()
+	_, _ = hasher.Write(publicKey[1:])
+	digest := hasher.Sum(nil)
+	payload := make([]byte, 21)
+	payload[0] = 0x41
+	copy(payload[1:], digest[len(digest)-20:])
+	return encodeBase58Check(payload), nil
+}
+
 // NormalizeAddressHex 将 Base58Check 或 41 前缀十六进制地址规范化为小写十六进制。
 func NormalizeAddressHex(value string) (string, error) {
 	value = strings.TrimSpace(value)
@@ -56,6 +72,23 @@ func NormalizeAddressHex(value string) (string, error) {
 	return value, nil
 }
 
+// NormalizeAddressBase58 将 Base58Check 或 41 前缀十六进制地址规范化为 Base58Check。
+func NormalizeAddressBase58(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if len(value) == 34 {
+		return NormalizeAddress(value)
+	}
+	hexAddress, err := NormalizeAddressHex(value)
+	if err != nil {
+		return "", err
+	}
+	payload, err := hex.DecodeString(hexAddress)
+	if err != nil {
+		return "", ErrInvalidAddress
+	}
+	return encodeBase58Check(payload), nil
+}
+
 func decodeBase58(value string) ([]byte, bool) {
 	number := new(big.Int)
 	base := big.NewInt(58)
@@ -75,4 +108,31 @@ func decodeBase58(value string) ([]byte, bool) {
 	result := make([]byte, leadingZeros+len(decoded))
 	copy(result[leadingZeros:], decoded)
 	return result, true
+}
+
+func encodeBase58Check(payload []byte) string {
+	first := sha256.Sum256(payload)
+	second := sha256.Sum256(first[:])
+	checked := make([]byte, 0, len(payload)+4)
+	checked = append(checked, payload...)
+	checked = append(checked, second[:4]...)
+
+	number := new(big.Int).SetBytes(checked)
+	base := big.NewInt(58)
+	remainder := new(big.Int)
+	encoded := make([]byte, 0, 40)
+	for number.Sign() > 0 {
+		number.QuoRem(number, base, remainder)
+		encoded = append(encoded, base58Alphabet[remainder.Int64()])
+	}
+	for _, value := range checked {
+		if value != 0 {
+			break
+		}
+		encoded = append(encoded, base58Alphabet[0])
+	}
+	for left, right := 0, len(encoded)-1; left < right; left, right = left+1, right-1 {
+		encoded[left], encoded[right] = encoded[right], encoded[left]
+	}
+	return string(encoded)
 }

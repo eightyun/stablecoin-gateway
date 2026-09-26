@@ -39,9 +39,10 @@ Implemented components:
 - Final payout confirmation from SolidityNode transactions and receipts
 - Atomic settlement on success and atomic fund release on safe failure or expiry
 - Read-only TRON testnet preflight and a mainnet broadcast safety switch that is off by default
+- Isolated Nile/Shasta testnet signer with contract/amount policy and durable replay protection
 - Separate available and frozen balance reporting
 
-Not yet implemented: automated address screening, wallet sweeping, reconciliation, monitoring and alerting, and the production signer service itself.
+Not yet implemented: automated address screening, wallet sweeping, reconciliation, monitoring and alerting, and a production KMS/HSM/MPC signing backend.
 
 ## Local Development
 
@@ -156,6 +157,28 @@ go run ./cmd/gateway-payout-signing-worker
 
 The remote service must implement `POST /v1/tron/transfers:sign` and return the same complete signed transaction for repeated `Idempotency-Key` values. The worker parses the result again and binds it to the expected owner, TRC20 contract, destination, amount, `fee_limit`, and lifetime instead of trusting only the returned txID. Production deployments should protect this HTTPS path with a mutual-TLS service mesh or equivalent workload identity. The bearer token must still be injected from a secrets manager.
 
+The included `gateway-testnet-signer` accepts only Nile or Shasta. It uses a local file key and explicitly rejects mainnet, so it is intended for testnet end-to-end acceptance rather than production key custody. Prepare a dedicated test wallet, store its 64-character hexadecimal private key in a `0600` file, and create a `0700` idempotency directory. Never commit the wallet key, bearer token, or TLS private key:
+
+```bash
+chmod 600 /secure/path/nile-wallet.key /secure/path/signer-tls.key
+install -d -m 700 /secure/path/signer-state
+
+export GATEWAY_TESTNET_SIGNER_TLS_CERT_FILE='/secure/path/signer-tls.crt'
+export GATEWAY_TESTNET_SIGNER_TLS_KEY_FILE='/secure/path/signer-tls.key'
+export GATEWAY_TESTNET_SIGNER_PRIVATE_KEY_FILE='/secure/path/nile-wallet.key'
+export GATEWAY_TESTNET_SIGNER_STORE_DIR='/secure/path/signer-state'
+export GATEWAY_TESTNET_SIGNER_BEARER_TOKEN='high-entropy-token-from-a-secret-manager'
+export GATEWAY_TESTNET_SIGNER_NETWORK='tron-nile'
+export GATEWAY_TESTNET_SIGNER_FULL_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_TESTNET_SIGNER_OWNER_ADDRESS='test-wallet-address'
+export GATEWAY_TESTNET_SIGNER_CONTRACTS='testnet-usdt-contract-address'
+export GATEWAY_TESTNET_SIGNER_MAX_AMOUNT='10000000'
+
+go run ./cmd/gateway-testnet-signer
+```
+
+The signer requires HTTPS and bearer authentication and verifies that the key matches the configured owner before serving. It signs only one allowlisted TRC20 `transfer` after revalidating the network, contract, destination, amount, fee, and lifetime. A UUID-bound result is durably persisted before the response is returned. The current file store is single-instance; replace it with a consistency-enforced shared store before running multiple signer replicas.
+
 Configure the FullNode and SolidityNode endpoints, then start the payout execution worker:
 
 ```bash
@@ -166,7 +189,7 @@ export GATEWAY_TRON_API_KEY='injected-by-your-secrets-manager'
 go run ./cmd/gateway-payout-execution-worker
 ```
 
-This configuration only makes the testnet integration available. The repository has not yet completed an end-to-end Nile test with a real test wallet and test assets. Production deployments should provide independent failover and monitoring for both node endpoints.
+This configuration provides the testnet signing, broadcast, and confirmation path. The repository has not yet completed end-to-end acceptance with a funded Nile wallet and real test assets. Production deployments should provide independent failover and monitoring for both node endpoints.
 
 Before configuring a wallet and remote signer, run the read-only Nile preflight, which holds no private key and writes nothing on-chain:
 
@@ -200,7 +223,7 @@ Only 2xx responses are successful. Delivery is at least once, so merchants must 
 
 ## Network Testing Gates
 
-- Read-only Nile node and asset preflight is available. The next phase connects a dedicated test wallet, remote signer, and faucet assets for a real deposit-and-payout end-to-end validation.
+- Nile node and asset preflight plus the isolated testnet signer are available. The next phase funds a dedicated wallet from a faucet and completes real deposit-and-payout end-to-end validation.
 - Mainnet canarying starts only after sustained testnet operation, three-way reconciliation, monitoring and alerting, disaster-recovery exercises, and an external security audit pass.
 - Mainnet is never a general test environment. Every mainnet canary requires a defined loss limit, dual approval, and an emergency stop.
 
@@ -221,7 +244,7 @@ The indexer reads finalized blocks only. It does not hold private keys or broadc
 ## Security Boundary
 
 - Application services must never store or log plaintext private keys.
-- Production signing must use an isolated remote signer, HSM, or MPC adapter.
+- The repository's file-key signer is testnet-only; production signing must use an independent KMS/HSM/MPC backend.
 - Mainnet capabilities must be explicitly enabled and pass a release checklist.
 - Deployers are responsible for address screening, KYC, AML, and licensing obligations in their jurisdictions.
 - Do not process real funds before completing a security audit, disaster-recovery exercises, and reconciliation acceptance tests.

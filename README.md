@@ -39,9 +39,10 @@
 - 基于 SolidityNode 固化交易与 Receipt 的终态确认
 - 成功出款原子结算、失败或安全过期出款原子解冻
 - TRON 测试网只读预检与默认关闭的主网广播安全开关
+- 独立的 Nile/Shasta 测试网签名服务、合约/金额白名单与持久化防重复签名
 - 可用余额与冻结余额分离查询
 
-尚未完成：自动地址筛查、归集、对账、监控告警和生产钱包签名服务本身。
+尚未完成：自动地址筛查、归集、对账、监控告警，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
 
 ## 本地运行
 
@@ -156,6 +157,28 @@ go run ./cmd/gateway-payout-signing-worker
 
 远程签名服务必须实现 `POST /v1/tron/transfers:sign`，按 `Idempotency-Key` 幂等返回同一笔完整签名交易。Worker 会再次解析签名交易，逐项核对付款地址、TRC20 合约、收款地址、金额、`fee_limit` 和有效期，不能只信任 signer 返回的 txID。生产环境应通过 mTLS 服务网格或等价工作负载身份保护该 HTTPS 链路；Bearer Token 仍必须从密钥管理服务注入，不能写入仓库。
 
+仓库提供的 `gateway-testnet-signer` 只允许 Nile/Shasta，使用本地文件私钥，明确拒绝主网。它适合下一阶段测试网端到端验收，不是生产密钥托管方案。准备一个独立测试钱包，将 64 位十六进制私钥写入权限为 `0600` 的文件，并创建权限为 `0700` 的幂等存储目录；私钥、Bearer Token 和 TLS 私钥均不得提交到 Git：
+
+```bash
+chmod 600 /secure/path/nile-wallet.key /secure/path/signer-tls.key
+install -d -m 700 /secure/path/signer-state
+
+export GATEWAY_TESTNET_SIGNER_TLS_CERT_FILE='/secure/path/signer-tls.crt'
+export GATEWAY_TESTNET_SIGNER_TLS_KEY_FILE='/secure/path/signer-tls.key'
+export GATEWAY_TESTNET_SIGNER_PRIVATE_KEY_FILE='/secure/path/nile-wallet.key'
+export GATEWAY_TESTNET_SIGNER_STORE_DIR='/secure/path/signer-state'
+export GATEWAY_TESTNET_SIGNER_BEARER_TOKEN='从密钥管理服务注入的高熵令牌'
+export GATEWAY_TESTNET_SIGNER_NETWORK='tron-nile'
+export GATEWAY_TESTNET_SIGNER_FULL_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_TESTNET_SIGNER_OWNER_ADDRESS='测试钱包地址'
+export GATEWAY_TESTNET_SIGNER_CONTRACTS='测试网 USDT 合约地址'
+export GATEWAY_TESTNET_SIGNER_MAX_AMOUNT='10000000'
+
+go run ./cmd/gateway-testnet-signer
+```
+
+签名服务固定使用 HTTPS 和 Bearer 鉴权，并在私钥使用前验证它与付款地址一致。它只签署单笔白名单 TRC20 `transfer`，对网络、合约、收款地址、金额、费用和有效期做二次校验；结果以请求 UUID 持久化后才响应。当前文件存储只支持单实例，部署多个 signer 实例前必须替换为具备一致性约束的共享存储。
+
 配置 FullNode、SolidityNode 并启动出款执行 Worker：
 
 ```bash
@@ -166,7 +189,7 @@ export GATEWAY_TRON_API_KEY='从密钥管理服务注入'
 go run ./cmd/gateway-payout-execution-worker
 ```
 
-上述配置仅表示具备测试网接入能力；仓库当前尚未完成 Nile 真实钱包和测试资产的端到端验证。生产环境应为两个节点端点配置独立容灾与监控。
+上述配置已具备测试网签名、广播和确认链路；仓库当前尚未使用已注资的 Nile 钱包完成真实测试资产的端到端验收。生产环境应为两个节点端点配置独立容灾与监控。
 
 在配置钱包和远程签名器前，先执行不持有私钥、不写链的 Nile 预检：
 
@@ -200,7 +223,7 @@ v1=HEX(HMAC_SHA256(secret, timestamp + "." + event_id + "." + raw_body))
 
 ## 网络测试门槛
 
-- 测试网：Nile 节点与资产只读预检已经可执行；下一阶段接入专用测试钱包、远程签名器和 Faucet 测试资产，完成真实出入款端到端验证。
+- 测试网：Nile 节点与资产只读预检、独立测试网 signer 已可执行；下一阶段为专用测试钱包领取 Faucet 资产，完成真实出入款端到端验证。
 - 主网灰度：测试网持续运行、三角对账、监控告警、灾难恢复演练和外部安全审计全部通过后，才允许白名单与小额限额灰度。
 - 主网不作为普通测试环境；任何主网验证都必须有明确损失上限、双人审批和停止开关。
 
@@ -221,7 +244,7 @@ go run ./cmd/gateway-deposit-worker
 ## 安全边界
 
 - 业务服务不得保存或记录明文私钥。
-- 生产签名必须通过独立远程签名服务、HSM 或 MPC 适配器完成。
+- 仓库内文件密钥 signer 仅限测试网；生产签名必须改用独立 KMS/HSM/MPC 后端。
 - 主网能力必须显式启用，并通过发布检查清单。
 - 地址筛查、KYC、AML 与牌照责任由部署运营方根据所在司法辖区落实。
 - 在安全审计、灾难恢复演练和资金对账验收完成前，不应承载真实资金。

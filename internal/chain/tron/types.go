@@ -79,6 +79,18 @@ type SignedTransaction struct {
 	Payload []byte
 }
 
+// UnsignedTransaction 是由 FullNode 构造、尚未附加签名的交易。
+type UnsignedTransaction struct {
+	ID      string
+	Payload []byte
+	RawData []byte
+}
+
+// TransferBuilder 构造一笔受约束的 TRC20 转账交易，但不接触私钥。
+type TransferBuilder interface {
+	BuildTransfer(context.Context, TransferSignRequest) (UnsignedTransaction, error)
+}
+
 // TokenMetadata 是预检时从目标 TRC20 合约读取的不可变元数据。
 type TokenMetadata struct {
 	Symbol   string

@@ -1,6 +1,7 @@
 package tron
 
 import (
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -32,5 +33,23 @@ func TestNormalizeAddressHex(t *testing.T) {
 	}
 	if _, err := NormalizeAddressHex("4100"); !errors.Is(err, ErrInvalidAddress) {
 		t.Fatalf("NormalizeAddressHex() error = %v", err)
+	}
+}
+
+func TestEncodeBase58CheckOfficialVector(t *testing.T) {
+	payload, err := hex.DecodeString("415a523b449890854c8fc460ab602df9f31fe4293f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if address := encodeBase58Check(payload); address != "TJCnKsPa7y5okkXvQAidZBzqx3QyQ6sxMW" {
+		t.Fatalf("encodeBase58Check() = %s", address)
+	}
+}
+
+func TestNormalizeAddressBase58(t *testing.T) {
+	const address = "TJCnKsPa7y5okkXvQAidZBzqx3QyQ6sxMW"
+	value, err := NormalizeAddressBase58("415a523b449890854c8fc460ab602df9f31fe4293f")
+	if err != nil || value != address {
+		t.Fatalf("NormalizeAddressBase58() = %s, %v", value, err)
 	}
 }
