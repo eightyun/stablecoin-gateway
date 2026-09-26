@@ -4,11 +4,16 @@ package payout
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"errors"
 	"os"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/eightyun/stablecoin-gateway/internal/chain/tron"
 	"github.com/eightyun/stablecoin-gateway/internal/database"
 	"github.com/eightyun/stablecoin-gateway/internal/deposit"
 	"github.com/eightyun/stablecoin-gateway/internal/identity"
@@ -118,7 +123,7 @@ func TestStoreApprovesPayoutIdempotently(t *testing.T) {
 		Reviewer: "risk@example.com", Reason: "manual screening passed",
 	}
 	result, err := fixture.store.Review(context.Background(), request)
-	if err != nil || !result.Changed || result.Status != StatusReadyForBroadcast || result.UnfreezeTransactionID != "" {
+	if err != nil || !result.Changed || result.Status != StatusApproved || result.UnfreezeTransactionID != "" {
 		t.Fatalf("Review() = %+v, %v", result, err)
 	}
 	available, frozen := fixture.balances(t)
@@ -126,7 +131,7 @@ func TestStoreApprovesPayoutIdempotently(t *testing.T) {
 		t.Fatalf("审批后余额 available=%s frozen=%s", available, frozen)
 	}
 	details, err := fixture.store.Get(context.Background(), fixture.merchantID, created.Payout.ID)
-	if err != nil || details.Status != StatusReadyForBroadcast {
+	if err != nil || details.Status != StatusApproved {
 		t.Fatalf("Get() = %+v, %v", details, err)
 	}
 	retry, err := fixture.store.Review(context.Background(), request)
@@ -212,11 +217,111 @@ func TestStoreSerializesConcurrentPayoutReviews(t *testing.T) {
 		t.Fatalf("Get() error = %v", err)
 	}
 	available, frozen := fixture.balances(t)
-	if details.Status == StatusReadyForBroadcast && (available != "40" || frozen != "60") {
+	if details.Status == StatusApproved && (available != "40" || frozen != "60") {
 		t.Fatalf("审批胜出余额 available=%s frozen=%s", available, frozen)
 	}
 	if details.Status == StatusRejected && (available != "100" || frozen != "0") {
 		t.Fatalf("拒绝胜出余额 available=%s frozen=%s", available, frozen)
+	}
+}
+
+func TestStoreSigningLeaseTakeoverAndCompletion(t *testing.T) {
+	fixture := newPayoutFixture(t, 100)
+	drainApprovedPayouts(t, fixture.store)
+	created, err := fixture.store.Create(context.Background(), fixture.request(t, "sign-1", "sign-order-1", "60"))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if _, err := fixture.store.Review(context.Background(), ReviewRequest{
+		PayoutID: created.Payout.ID, Decision: DecisionApprove,
+		Reviewer: "risk@example.com", Reason: "approved for signing",
+	}); err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	first, err := fixture.store.ClaimSigning(context.Background(), "signer-1", time.Minute)
+	if err != nil || first.PayoutID != created.Payout.ID || first.LeaseEpoch != 1 ||
+		first.Amount != "60" || first.DestinationAddress != testDestination {
+		t.Fatalf("第一次 ClaimSigning() = %+v, %v", first, err)
+	}
+	if _, err := fixture.store.ClaimSigning(context.Background(), "signer-2", time.Minute); !errors.Is(err, ErrNoSigningJob) {
+		t.Fatalf("租约占用时 ClaimSigning() error = %v", err)
+	}
+	if _, err := fixture.pool.Exec(context.Background(), `
+		UPDATE payouts SET execution_lease_until = clock_timestamp() - INTERVAL '1 second' WHERE id = $1
+	`, created.Payout.ID); err != nil {
+		t.Fatalf("模拟租约过期: %v", err)
+	}
+	second, err := fixture.store.ClaimSigning(context.Background(), "signer-2", time.Minute)
+	if err != nil || second.PayoutID != created.Payout.ID || second.LeaseEpoch != 2 {
+		t.Fatalf("接管 ClaimSigning() = %+v, %v", second, err)
+	}
+	transactionHash := sha256.Sum256([]byte(created.Payout.ID))
+	transaction := tron.SignedTransaction{
+		ID:      hex.EncodeToString(transactionHash[:]),
+		Payload: []byte(`{"txID":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
+	}
+	if err := fixture.store.CompleteSigning(context.Background(), first, transaction); !errors.Is(err, ErrSigningLeaseLost) {
+		t.Fatalf("旧租约 CompleteSigning() error = %v", err)
+	}
+	if err := fixture.store.ReleaseSigning(context.Background(), second, "signer_timeout"); err != nil {
+		t.Fatalf("ReleaseSigning() error = %v", err)
+	}
+	third, err := fixture.store.ClaimSigning(context.Background(), "signer-3", time.Minute)
+	if err != nil || third.LeaseEpoch != 3 {
+		t.Fatalf("重试 ClaimSigning() = %+v, %v", third, err)
+	}
+	if err := fixture.store.CompleteSigning(context.Background(), third, transaction); err != nil {
+		t.Fatalf("CompleteSigning() error = %v", err)
+	}
+	var status, transactionID, payload string
+	var attempts int
+	var leaseOwner sql.NullString
+	if err := fixture.pool.QueryRow(context.Background(), `
+		SELECT status, transaction_id, convert_from(signed_transaction, 'UTF8'), signing_attempts, execution_lease_owner
+		FROM payouts WHERE id = $1
+	`, created.Payout.ID).Scan(&status, &transactionID, &payload, &attempts, &leaseOwner); err != nil {
+		t.Fatalf("查询签名结果: %v", err)
+	}
+	if status != StatusReadyForBroadcast || transactionID != transaction.ID || payload != string(transaction.Payload) ||
+		attempts != 3 || leaseOwner.Valid {
+		t.Fatalf("签名结果 status=%s tx=%s payload=%q attempts=%d lease=%v", status, transactionID, payload, attempts, leaseOwner)
+	}
+
+	secondPayout, err := fixture.store.Create(context.Background(), fixture.request(t, "sign-2", "sign-order-2", "20"))
+	if err != nil {
+		t.Fatalf("创建第二笔出款: %v", err)
+	}
+	if _, err := fixture.store.Review(context.Background(), ReviewRequest{
+		PayoutID: secondPayout.Payout.ID, Decision: DecisionApprove,
+		Reviewer: "risk@example.com", Reason: "approved for signing",
+	}); err != nil {
+		t.Fatalf("审批第二笔出款: %v", err)
+	}
+	conflictingClaim, err := fixture.store.ClaimSigning(context.Background(), "signer-4", time.Minute)
+	if err != nil || conflictingClaim.PayoutID != secondPayout.Payout.ID {
+		t.Fatalf("领取第二笔出款 = %+v, %v", conflictingClaim, err)
+	}
+	if err := fixture.store.CompleteSigning(context.Background(), conflictingClaim, transaction); !errors.Is(err, ErrSignedTransactionConflict) {
+		t.Fatalf("重复交易 ID CompleteSigning() error = %v", err)
+	}
+}
+
+func drainApprovedPayouts(t *testing.T, store *Store) {
+	t.Helper()
+	for {
+		claim, err := store.ClaimSigning(context.Background(), "test-drain", time.Minute)
+		if errors.Is(err, ErrNoSigningJob) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("清理待签名出款: %v", err)
+		}
+		sum := sha256.Sum256([]byte(claim.PayoutID))
+		if err := store.CompleteSigning(context.Background(), claim, tron.SignedTransaction{
+			ID: hex.EncodeToString(sum[:]), Payload: []byte(`{"test":"drained"}`),
+		}); err != nil {
+			t.Fatalf("完成清理签名: %v", err)
+		}
 	}
 }
 

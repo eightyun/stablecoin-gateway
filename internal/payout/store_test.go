@@ -43,7 +43,7 @@ func TestValidateReviewRequest(t *testing.T) {
 		PayoutID: "123e4567-e89b-42d3-a456-426614174000",
 		Decision: DecisionApprove, Reviewer: "risk@example.com", Reason: "screening passed",
 	}
-	if status, err := validateReviewRequest(request); err != nil || status != StatusReadyForBroadcast {
+	if status, err := validateReviewRequest(request); err != nil || status != StatusApproved {
 		t.Fatalf("validateReviewRequest() = %q, %v", status, err)
 	}
 	request.Decision = "unknown"

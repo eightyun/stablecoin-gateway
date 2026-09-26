@@ -17,6 +17,7 @@ import (
 
 const (
 	StatusPendingReview     = "pending_review"
+	StatusApproved          = "approved"
 	StatusReadyForBroadcast = "ready_for_broadcast"
 	StatusRejected          = "rejected"
 )
@@ -216,7 +217,7 @@ func validateReviewRequest(request ReviewRequest) (string, error) {
 	}
 	switch request.Decision {
 	case DecisionApprove:
-		return StatusReadyForBroadcast, nil
+		return StatusApproved, nil
 	case DecisionReject:
 		return StatusRejected, nil
 	default:

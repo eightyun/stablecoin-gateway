@@ -32,9 +32,10 @@ Gateway 是一个面向商户的生产级开源稳定币支付系统，目标覆
 - 默认阻止私网目标、禁止重定向的 Webhook SSRF 防护
 - 商户出款申请、TRON 地址校验与原子余额冻结
 - 带审计记录的出款审批，以及拒绝时的原子余额解冻
+- 带租约和栅栏令牌的出款签名队列，以及隔离签名器接口
 - 可用余额与冻结余额分离查询
 
-尚未完成：自动地址筛查、出款签名/广播/确认、归集、对账和生产钱包签名基础设施。
+尚未完成：远程签名器适配、自动地址筛查、出款广播/确认、归集、对账和生产钱包签名基础设施。
 
 ## 本地运行
 
@@ -106,7 +107,7 @@ go run ./cmd/gateway-admin reject-payout \
   --reason 'destination screening denied'
 ```
 
-审批通过后出款进入 `ready_for_broadcast`；拒绝会在同一数据库事务中把冻结资金退回可用余额。命令重复执行相同决定是幂等的，冲突决定会失败。
+审批通过后出款进入 `approved`；拒绝会在同一数据库事务中把冻结资金退回可用余额。命令重复执行相同决定是幂等的，冲突决定会失败。
 
 ## 商户 API
 
@@ -135,7 +136,7 @@ UPPERCASE_METHOD\nREQUEST_URI\nTIMESTAMP\nNONCE\nSHA256_HEX(BODY)
 
 其中 `REQUEST_URI` 包含查询字符串。服务端默认接受前后 5 分钟时间窗，并在签名验证成功后原子消费 nonce。
 
-当前出款创建后进入 `pending_review`，资金从 `available` 转入 `frozen`；审批通过后进入 `ready_for_broadcast`，但尚不会签名或广播链上交易。第一条出款网络只接受 TRON Base58Check 地址。
+当前出款创建后进入 `pending_review`，资金从 `available` 转入 `frozen`；审批通过后进入 `approved`。签名 Worker 通过数据库租约领取任务，并只调用不暴露私钥的 `TransferSigner`；成功持久化唯一签名交易后才进入 `ready_for_broadcast`。仓库尚未提供远程签名器和节点广播适配，因此目前不会产生链上交易。第一条出款网络只接受 TRON Base58Check 地址。
 
 ## Webhook
 

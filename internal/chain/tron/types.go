@@ -79,6 +79,21 @@ type SignedTransaction struct {
 	Payload []byte
 }
 
+// TransferSignRequest 是交给隔离签名服务的语义化 TRC20 转账请求。
+// RequestID 是全局幂等键；同一请求必须始终返回同一笔已签名交易。
+type TransferSignRequest struct {
+	RequestID          string
+	Network            string
+	ContractAddress    string
+	DestinationAddress string
+	Amount             string
+}
+
+// TransferSigner 由独立托管或签名服务实现。业务进程不得持有私钥。
+type TransferSigner interface {
+	SignTransfer(ctx context.Context, request TransferSignRequest) (SignedTransaction, error)
+}
+
 // Reader 提供链头、固化头、按高度重扫和按交易 ID 恢复所需的读取能力。
 type Reader interface {
 	Head(ctx context.Context) (Header, error)

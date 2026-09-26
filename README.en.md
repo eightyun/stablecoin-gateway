@@ -32,9 +32,10 @@ Implemented components:
 - Webhook SSRF protection that blocks private targets and redirects by default
 - Merchant payout requests with TRON address validation and atomic balance freezing
 - Audited payout review with atomic unfreezing on rejection
+- Leased payout-signing queue with fencing tokens and an isolated signer interface
 - Separate available and frozen balance reporting
 
-Not yet implemented: automated address screening, payout signing/broadcasting/confirmation, wallet sweeping, reconciliation, and production wallet-signing infrastructure.
+Not yet implemented: a remote signer adapter, automated address screening, payout broadcasting/confirmation, wallet sweeping, reconciliation, and production wallet-signing infrastructure.
 
 ## Local Development
 
@@ -106,7 +107,7 @@ go run ./cmd/gateway-admin reject-payout \
   --reason 'destination screening denied'
 ```
 
-Approval moves the payout to `ready_for_broadcast`. Rejection returns frozen funds to the available balance in the same database transaction. Retrying an identical decision is idempotent; conflicting decisions fail.
+Approval moves the payout to `approved`. Rejection returns frozen funds to the available balance in the same database transaction. Retrying an identical decision is idempotent; conflicting decisions fail.
 
 ## Merchant API
 
@@ -135,7 +136,7 @@ UPPERCASE_METHOD\nREQUEST_URI\nTIMESTAMP\nNONCE\nSHA256_HEX(BODY)
 
 `REQUEST_URI` includes the query string. The server accepts a five-minute clock skew by default and atomically consumes the nonce after signature verification.
 
-New payouts enter `pending_review` and move funds from `available` to `frozen`. Approval moves them to `ready_for_broadcast`, but no transaction is signed or broadcast yet. The initial payout rail accepts TRON Base58Check addresses only.
+New payouts enter `pending_review` and move funds from `available` to `frozen`; approval moves them to `approved`. A signing worker claims jobs through database leases and calls only the private-key-free `TransferSigner` boundary. A payout reaches `ready_for_broadcast` only after one immutable signed transaction has been persisted. The repository does not yet include a remote signer or node broadcaster adapter, so no on-chain transaction is produced. The initial payout rail accepts TRON Base58Check addresses only.
 
 ## Webhooks
 
