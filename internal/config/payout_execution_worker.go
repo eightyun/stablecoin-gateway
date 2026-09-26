@@ -52,6 +52,17 @@ func LoadPayoutExecutionWorker() (PayoutExecutionWorkerConfig, error) {
 	if err != nil {
 		return PayoutExecutionWorkerConfig{}, err
 	}
+	network, err = validatedTRONNetwork(network)
+	if err != nil {
+		return PayoutExecutionWorkerConfig{}, err
+	}
+	mainnetEnabled, err := boolEnv("GATEWAY_TRON_MAINNET_ENABLED", false)
+	if err != nil {
+		return PayoutExecutionWorkerConfig{}, err
+	}
+	if network == "tron-mainnet" && !mainnetEnabled {
+		return PayoutExecutionWorkerConfig{}, fmt.Errorf("tron-mainnet 必须显式设置 GATEWAY_TRON_MAINNET_ENABLED=true")
+	}
 	operationTimeout, err := durationFromEnv("GATEWAY_PAYOUT_EXECUTION_OPERATION_TIMEOUT", defaultPayoutExecutionOperationTimeout)
 	if err != nil {
 		return PayoutExecutionWorkerConfig{}, err
@@ -100,4 +111,14 @@ func LoadPayoutExecutionWorker() (PayoutExecutionWorkerConfig, error) {
 		LeaseDuration: leaseDuration, ConfirmationInterval: confirmationInterval,
 		IdleInterval: idleInterval, RetryMin: retryMin, RetryMax: retryMax,
 	}, nil
+}
+
+func validatedTRONNetwork(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "tron-nile", "tron-shasta", "tron-mainnet":
+		return value, nil
+	default:
+		return "", fmt.Errorf("GATEWAY_TRON_NETWORK 必须是 tron-nile、tron-shasta 或 tron-mainnet")
+	}
 }

@@ -1,8 +1,8 @@
-# Gateway
+# stablecoin-gateway
 
 [简体中文](README.md) | English
 
-Gateway is a production-oriented, open-source stablecoin payment system for merchants. Its target scope includes deposits, payouts, double-entry accounting, blockchain indexing, merchant webhooks, reconciliation, and failure recovery.
+[stablecoin-gateway](https://github.com/eightyun/stablecoin-gateway) is a production-oriented, open-source stablecoin payment system for merchants. Its target scope includes deposits, payouts, double-entry accounting, blockchain indexing, merchant webhooks, reconciliation, and failure recovery.
 
 The first stable release focuses on USDT-TRC20. EVM networks will be added through chain adapters, while x402 support will remain an independent extension.
 
@@ -37,6 +37,7 @@ Implemented components:
 - Leased payout broadcast and confirmation worker with recovery by the original txID
 - Final payout confirmation from SolidityNode transactions and receipts
 - Atomic settlement on success and atomic fund release on safe failure or expiry
+- Read-only TRON testnet preflight and a mainnet broadcast safety switch that is off by default
 - Separate available and frozen balance reporting
 
 Not yet implemented: automated address screening, wallet sweeping, reconciliation, monitoring and alerting, and the production signer service itself.
@@ -164,6 +165,20 @@ go run ./cmd/gateway-payout-execution-worker
 
 This configuration only makes the testnet integration available. The repository has not yet completed an end-to-end Nile test with a real test wallet and test assets. Production deployments should provide independent failover and monitoring for both node endpoints.
 
+Before configuring a wallet and remote signer, run the read-only Nile preflight, which holds no private key and writes nothing on-chain:
+
+```bash
+export GATEWAY_TRON_NETWORK='tron-nile'
+export GATEWAY_PAYOUT_TRON_FULL_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_PAYOUT_TRON_SOLIDITY_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_TRON_PREFLIGHT_CONTRACT='TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf'
+export GATEWAY_TRON_PREFLIGHT_EXPECTED_SYMBOL='USDT'
+export GATEWAY_TRON_PREFLIGHT_EXPECTED_DECIMALS='6'
+go run ./cmd/gateway-tron-preflight
+```
+
+The preflight rejects mainnet, stale or future-dated heads, excessive finality lag, and mismatched token metadata. Use the [official TRON network documentation](https://developers.tron.network/docs/networks) and [test-token guide](https://developers.tron.network/docs/getting-testnet-tokens-on-tron) as the source of truth for Nile endpoints and faucets. A payout execution worker connected to `tron-mainnet` also requires `GATEWAY_TRON_MAINNET_ENABLED=true`; this guard does not replace release approval, limits, or audits.
+
 ## Webhooks
 
 The current event type is `deposit.confirmed`. The event envelope is stable:
@@ -182,7 +197,7 @@ Only 2xx responses are successful. Delivery is at least once, so merchants must 
 
 ## Network Testing Gates
 
-- The payout review, isolated signing, broadcast, and finalized-confirmation path is ready for testnet integration. The next phase validates it end to end with a Nile wallet and test assets; manual review remains the safety gate until automated address screening exists.
+- Read-only Nile node and asset preflight is available. The next phase connects a dedicated test wallet, remote signer, and faucet assets for a real deposit-and-payout end-to-end validation.
 - Mainnet canarying starts only after sustained testnet operation, three-way reconciliation, monitoring and alerting, disaster-recovery exercises, and an external security audit pass.
 - Mainnet is never a general test environment. Every mainnet canary requires a defined loss limit, dual approval, and an emergency stop.
 

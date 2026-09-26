@@ -79,6 +79,12 @@ type SignedTransaction struct {
 	Payload []byte
 }
 
+// TokenMetadata 是预检时从目标 TRC20 合约读取的不可变元数据。
+type TokenMetadata struct {
+	Symbol   string
+	Decimals uint8
+}
+
 // TransferSignRequest 是交给隔离签名服务的语义化 TRC20 转账请求。
 // RequestID 是全局幂等键；同一请求必须始终返回同一笔已签名交易。
 type TransferSignRequest struct {

@@ -35,11 +35,27 @@ func TestLoadPayoutExecutionWorkerRejectsLeaseShorterThanOperation(t *testing.T)
 	}
 }
 
+func TestLoadPayoutExecutionWorkerRequiresExplicitMainnetEnable(t *testing.T) {
+	clearPayoutExecutionEnvironment(t)
+	t.Setenv("GATEWAY_DATABASE_URL", "postgres://gateway:test@localhost/gateway")
+	t.Setenv("GATEWAY_PAYOUT_TRON_FULL_NODE_URL", "https://full.example")
+	t.Setenv("GATEWAY_PAYOUT_TRON_SOLIDITY_NODE_URL", "https://solidity.example")
+	t.Setenv("GATEWAY_TRON_NETWORK", "tron-mainnet")
+	if _, err := LoadPayoutExecutionWorker(); err == nil {
+		t.Fatal("LoadPayoutExecutionWorker() 应拒绝未显式启用的主网")
+	}
+	t.Setenv("GATEWAY_TRON_MAINNET_ENABLED", "true")
+	if _, err := LoadPayoutExecutionWorker(); err != nil {
+		t.Fatalf("显式启用主网后 LoadPayoutExecutionWorker() error = %v", err)
+	}
+}
+
 func clearPayoutExecutionEnvironment(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
 		"GATEWAY_DATABASE_URL", "GATEWAY_PAYOUT_TRON_FULL_NODE_URL",
 		"GATEWAY_PAYOUT_TRON_SOLIDITY_NODE_URL", "GATEWAY_TRON_NETWORK", "GATEWAY_TRON_API_KEY",
+		"GATEWAY_TRON_MAINNET_ENABLED",
 		"GATEWAY_PAYOUT_EXECUTION_WORKER_ID", "GATEWAY_PAYOUT_NODE_MAX_RESPONSE_BYTES",
 		"GATEWAY_PAYOUT_EXECUTION_OPERATION_TIMEOUT", "GATEWAY_PAYOUT_EXECUTION_LEASE_DURATION",
 		"GATEWAY_PAYOUT_CONFIRMATION_INTERVAL", "GATEWAY_PAYOUT_EXECUTION_IDLE_INTERVAL",

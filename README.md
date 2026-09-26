@@ -1,8 +1,8 @@
-# Gateway
+# stablecoin-gateway
 
 简体中文 | [English](README.en.md)
 
-Gateway 是一个面向商户的生产级开源稳定币支付系统，目标覆盖充值、出款、双分录账本、链上索引、商户回调、对账与异常恢复。
+[stablecoin-gateway](https://github.com/eightyun/stablecoin-gateway) 是一个面向商户的生产级开源稳定币支付系统，目标覆盖充值、出款、双分录账本、链上索引、商户回调、对账与异常恢复。
 
 首个稳定版本聚焦 USDT-TRC20，之后通过链适配接口扩展 EVM，并以独立扩展提供 x402 支持。
 
@@ -37,6 +37,7 @@ Gateway 是一个面向商户的生产级开源稳定币支付系统，目标覆
 - 带租约的出款广播与确认 Worker，广播结果不确定时按原 txID 恢复
 - 基于 SolidityNode 固化交易与 Receipt 的终态确认
 - 成功出款原子结算、失败或安全过期出款原子解冻
+- TRON 测试网只读预检与默认关闭的主网广播安全开关
 - 可用余额与冻结余额分离查询
 
 尚未完成：自动地址筛查、归集、对账、监控告警和生产钱包签名服务本身。
@@ -164,6 +165,20 @@ go run ./cmd/gateway-payout-execution-worker
 
 上述配置仅表示具备测试网接入能力；仓库当前尚未完成 Nile 真实钱包和测试资产的端到端验证。生产环境应为两个节点端点配置独立容灾与监控。
 
+在配置钱包和远程签名器前，先执行不持有私钥、不写链的 Nile 预检：
+
+```bash
+export GATEWAY_TRON_NETWORK='tron-nile'
+export GATEWAY_PAYOUT_TRON_FULL_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_PAYOUT_TRON_SOLIDITY_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_TRON_PREFLIGHT_CONTRACT='TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf'
+export GATEWAY_TRON_PREFLIGHT_EXPECTED_SYMBOL='USDT'
+export GATEWAY_TRON_PREFLIGHT_EXPECTED_DECIMALS='6'
+go run ./cmd/gateway-tron-preflight
+```
+
+预检会拒绝主网、过旧或超前的链头、固化高度异常以及合约元数据不匹配。Nile Endpoint 与 Faucet 信息以 [TRON 官方网络文档](https://developers.tron.network/docs/networks)和[测试币文档](https://developers.tron.network/docs/getting-testnet-tokens-on-tron)为准。出款执行进程连接 `tron-mainnet` 时还必须显式设置 `GATEWAY_TRON_MAINNET_ENABLED=true`；这只是防误操作开关，不替代发布审批、限额和审计。
+
 ## Webhook
 
 当前投递 `deposit.confirmed`。事件信封固定为：
@@ -182,7 +197,7 @@ v1=HEX(HMAC_SHA256(secret, timestamp + "." + event_id + "." + raw_body))
 
 ## 网络测试门槛
 
-- 测试网：出款审批、隔离签名、广播和固化确认链路已具备接入条件；下一阶段使用 Nile 钱包和测试资产做端到端验证，但地址筛查仍需先以人工审批作为安全闸门。
+- 测试网：Nile 节点与资产只读预检已经可执行；下一阶段接入专用测试钱包、远程签名器和 Faucet 测试资产，完成真实出入款端到端验证。
 - 主网灰度：测试网持续运行、三角对账、监控告警、灾难恢复演练和外部安全审计全部通过后，才允许白名单与小额限额灰度。
 - 主网不作为普通测试环境；任何主网验证都必须有明确损失上限、双人审批和停止开关。
 

@@ -2,6 +2,7 @@ package nodehttp_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -61,6 +62,41 @@ func TestClientReadsFinalizedBlockAndTransfer(t *testing.T) {
 	}
 	if len(block.Transfers) != 1 || block.Transfers[0] != want {
 		t.Fatalf("Transfers = %+v, 期望 %+v", block.Transfers, want)
+	}
+}
+
+func TestClientReadsHeadAndTokenMetadata(t *testing.T) {
+	server := newNodeServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/wallet/getnowblock":
+			writeJSON(writer, blockJSON(nil))
+		case "/wallet/triggerconstantcontract":
+			var body struct {
+				Function string `json:"function_selector"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatalf("解析请求: %v", err)
+			}
+			switch body.Function {
+			case "decimals()":
+				writeJSON(writer, `{"constant_result":["0000000000000000000000000000000000000000000000000000000000000006"],"result":{"result":true}}`)
+			case "symbol()":
+				writeJSON(writer, `{"constant_result":["000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000045553445400000000000000000000000000000000000000000000000000000000"],"result":{"result":true}}`)
+			default:
+				t.Fatalf("未知函数: %s", body.Function)
+			}
+		default:
+			http.NotFound(writer, request)
+		}
+	})
+	client := newClient(t, server.URL, "", 0)
+	head, err := client.Head(context.Background())
+	if err != nil || head.Height != 1 {
+		t.Fatalf("Head() = %+v, %v", head, err)
+	}
+	metadata, err := client.TokenMetadata(context.Background(), "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf")
+	if err != nil || metadata != (tron.TokenMetadata{Symbol: "USDT", Decimals: 6}) {
+		t.Fatalf("TokenMetadata() = %+v, %v", metadata, err)
 	}
 }
 

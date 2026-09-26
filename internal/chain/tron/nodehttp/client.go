@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/eightyun/stablecoin-gateway/internal/chain/tron"
 )
@@ -39,13 +40,26 @@ type Config struct {
 	MaxResponseBytes int64
 }
 
-// Client 只读取 SolidityNode 已固化快照。
+// Client 读取 TRON FullNode 或 SolidityNode HTTP 接口。
 type Client struct {
 	baseURL          *url.URL
 	network          string
 	apiKey           string
 	maxResponseBytes int64
 	httpClient       *http.Client
+}
+
+// Head 返回 FullNode 当前最新链头。
+func (client *Client) Head(ctx context.Context) (tron.Header, error) {
+	var block wireBlock
+	if err := client.post(ctx, "/wallet/getnowblock", struct{}{}, &block); err != nil {
+		return tron.Header{}, err
+	}
+	header, err := parseHeader(block)
+	if errors.Is(err, tron.ErrBlockNotFound) {
+		return tron.Header{}, fmt.Errorf("读取最新链头: %w", ErrInvalidResponse)
+	}
+	return header, err
 }
 
 var _ tron.FinalizedReader = (*Client)(nil)
@@ -204,6 +218,101 @@ func (client *Client) Transaction(ctx context.Context, transactionID string) (tr
 	return tron.TransactionState{
 		Status: status, Block: tron.Header{Height: uint64(info.BlockNumber)}, Solidified: true,
 	}, nil
+}
+
+// TokenMetadata 通过 FullNode 常量调用读取 TRC20 symbol 和 decimals。
+func (client *Client) TokenMetadata(ctx context.Context, contractAddress string) (tron.TokenMetadata, error) {
+	contractAddress, err := tron.NormalizeAddress(contractAddress)
+	if err != nil {
+		return tron.TokenMetadata{}, err
+	}
+	decimalsResult, err := client.constantCall(ctx, contractAddress, "decimals()")
+	if err != nil {
+		return tron.TokenMetadata{}, fmt.Errorf("读取 TRC20 decimals: %w", err)
+	}
+	decimals, err := decodeABIDecimals(decimalsResult)
+	if err != nil {
+		return tron.TokenMetadata{}, err
+	}
+	symbolResult, err := client.constantCall(ctx, contractAddress, "symbol()")
+	if err != nil {
+		return tron.TokenMetadata{}, fmt.Errorf("读取 TRC20 symbol: %w", err)
+	}
+	symbol, err := decodeABIString(symbolResult)
+	if err != nil {
+		return tron.TokenMetadata{}, err
+	}
+	return tron.TokenMetadata{Symbol: symbol, Decimals: decimals}, nil
+}
+
+func (client *Client) constantCall(ctx context.Context, contractAddress, selector string) (string, error) {
+	request := struct {
+		OwnerAddress    string `json:"owner_address"`
+		ContractAddress string `json:"contract_address"`
+		Function        string `json:"function_selector"`
+		Visible         bool   `json:"visible"`
+	}{
+		OwnerAddress:    "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+		ContractAddress: contractAddress,
+		Function:        selector,
+		Visible:         true,
+	}
+	var response struct {
+		ConstantResult []string `json:"constant_result"`
+		Result         struct {
+			Accepted *bool `json:"result"`
+		} `json:"result"`
+	}
+	if err := client.post(ctx, "/wallet/triggerconstantcontract", request, &response); err != nil {
+		return "", err
+	}
+	if response.Result.Accepted == nil || !*response.Result.Accepted || len(response.ConstantResult) != 1 {
+		return "", ErrInvalidResponse
+	}
+	return response.ConstantResult[0], nil
+}
+
+func decodeABIDecimals(value string) (uint8, error) {
+	decoded, err := hex.DecodeString(value)
+	if err != nil || len(decoded) != 32 || !bytes.Equal(decoded[:31], make([]byte, 31)) {
+		return 0, ErrInvalidResponse
+	}
+	return decoded[31], nil
+}
+
+func decodeABIString(value string) (string, error) {
+	decoded, err := hex.DecodeString(value)
+	if err != nil || len(decoded) < 64 || len(decoded)%32 != 0 {
+		return "", ErrInvalidResponse
+	}
+	offsetValue := new(big.Int).SetBytes(decoded[:32])
+	if !offsetValue.IsInt64() {
+		return "", ErrInvalidResponse
+	}
+	offset := offsetValue.Int64()
+	if offset < 32 || offset%32 != 0 || offset > int64(len(decoded)-32) {
+		return "", ErrInvalidResponse
+	}
+	lengthValue := new(big.Int).SetBytes(decoded[offset : offset+32])
+	if !lengthValue.IsInt64() {
+		return "", ErrInvalidResponse
+	}
+	length := lengthValue.Int64()
+	start := offset + 32
+	if length <= 0 || length > 64 || start > int64(len(decoded))-length {
+		return "", ErrInvalidResponse
+	}
+	symbolBytes := decoded[start : start+length]
+	if !utf8.Valid(symbolBytes) {
+		return "", ErrInvalidResponse
+	}
+	symbol := string(symbolBytes)
+	for _, character := range symbol {
+		if character < 0x21 || character > 0x7e {
+			return "", ErrInvalidResponse
+		}
+	}
+	return symbol, nil
 }
 
 type wireBlock struct {
