@@ -21,6 +21,7 @@ Gateway 是一个面向商户的生产级开源稳定币支付系统，目标覆
 - 带租约和栅栏令牌的持久化扫描游标
 - 独立 TRON 扫描 Worker
 - 充值地址、充值意图和链事件匹配模型
+- 独立充值匹配与意图过期 Worker
 
 尚未完成：商户 API、自动充值过账、Webhook、出款、归集、风控筛查、对账和生产密钥基础设施。
 
@@ -51,7 +52,13 @@ go run ./cmd/gateway-migrate up
 go run ./cmd/gateway-indexer
 ```
 
-索引器只读取已固化区块，不持有私钥，也不广播交易。数据库迁移必须在 API 或 Worker 启动前独立完成。
+启动充值匹配 Worker：
+
+```bash
+go run ./cmd/gateway-deposit-worker
+```
+
+索引器只读取已固化区块，不持有私钥，也不广播交易。充值 Worker 消费索引器已持久化的链事件，支持多实例并发处理。数据库迁移必须在 API 或 Worker 启动前独立完成。
 
 ## 安全边界
 

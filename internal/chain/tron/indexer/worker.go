@@ -3,10 +3,10 @@ package indexer
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"time"
+
+	"github.com/eightyun/stablecoin-gateway/internal/background"
 )
 
 var ErrInvalidWorker = errors.New("扫描 Worker 配置无效")
@@ -26,9 +26,7 @@ type WorkerConfig struct {
 
 // Worker 持续驱动扫描器追赶已固化链头。
 type Worker struct {
-	stepper Stepper
-	logger  *slog.Logger
-	config  WorkerConfig
+	runner *background.Runner
 }
 
 // NewWorker 创建扫描 Worker。
@@ -37,86 +35,43 @@ func NewWorker(stepper Stepper, logger *slog.Logger, config WorkerConfig) (*Work
 		config.RetryMin <= 0 || config.RetryMax < config.RetryMin {
 		return nil, ErrInvalidWorker
 	}
-	return &Worker{stepper: stepper, logger: logger, config: config}, nil
+	operation := background.OperationFunc(func(ctx context.Context) (bool, error) {
+		result, err := stepper.Step(ctx)
+		if err == nil && result.Processed && result.EventCount > 0 {
+			logger.Info("已保存 TRON 链事件", "height", result.Height, "events", result.EventCount)
+		}
+		return result.Processed, err
+	})
+	runner, err := background.NewRunner(operation, logger, background.Config{
+		Name:             "tron-indexer",
+		OperationTimeout: config.StepTimeout,
+		IdleInterval:     config.IdleInterval,
+		RetryMin:         config.RetryMin,
+		RetryMax:         config.RetryMax,
+	}, classifyWorkerError)
+	if err != nil {
+		return nil, ErrInvalidWorker
+	}
+	return &Worker{runner: runner}, nil
 }
 
 // Run 持续扫描，直到上下文取消或遇到需要人工处理的一致性错误。
 func (worker *Worker) Run(ctx context.Context) error {
-	retryDelay := worker.config.RetryMin
-	for {
-		if ctx.Err() != nil {
-			return nil
-		}
-		stepCtx, cancel := context.WithTimeout(ctx, worker.config.StepTimeout)
-		result, err := worker.stepper.Step(stepCtx)
-		cancel()
-		if ctx.Err() != nil {
-			return nil
-		}
-		if err == nil {
-			retryDelay = worker.config.RetryMin
-			if result.Processed {
-				if result.EventCount > 0 {
-					worker.logger.Info("已保存 TRON 链事件", "height", result.Height, "events", result.EventCount)
-				}
-				continue
-			}
-			if !wait(ctx, worker.config.IdleInterval) {
-				return nil
-			}
-			continue
-		}
-		if isPermanentWorkerError(err) {
-			return fmt.Errorf("扫描因一致性错误停止: %w", err)
-		}
-		if errors.Is(err, ErrLeaseUnavailable) {
-			if !wait(ctx, worker.config.IdleInterval) {
-				return nil
-			}
-			continue
-		}
-		actualDelay := jitter(retryDelay)
-		worker.logger.Warn("TRON 扫描暂时失败", "error", err, "retry_after", actualDelay)
-		if !wait(ctx, actualDelay) {
-			return nil
-		}
-		retryDelay = nextRetry(retryDelay, worker.config.RetryMax)
-	}
+	return worker.runner.Run(ctx)
 }
 
-func isPermanentWorkerError(err error) bool {
-	return errors.Is(err, ErrInvalidCursor) ||
+func classifyWorkerError(err error) background.Decision {
+	if errors.Is(err, ErrInvalidCursor) ||
 		errors.Is(err, ErrAnchorConflict) ||
 		errors.Is(err, ErrContractConflict) ||
 		errors.Is(err, ErrContractUnbound) ||
 		errors.Is(err, ErrInvalidBlock) ||
 		errors.Is(err, ErrInvalidEvent) ||
-		errors.Is(err, ErrEventConflict)
-}
-
-func wait(ctx context.Context, duration time.Duration) bool {
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
+		errors.Is(err, ErrEventConflict) {
+		return background.Stop
 	}
-}
-
-func jitter(duration time.Duration) time.Duration {
-	spread := duration / 5
-	if spread == 0 {
-		return duration
+	if errors.Is(err, ErrLeaseUnavailable) {
+		return background.Idle
 	}
-	offset := time.Duration(rand.Int64N(int64(spread)*2+1)) - spread
-	return duration + offset
-}
-
-func nextRetry(current, maximum time.Duration) time.Duration {
-	if current >= maximum || current > maximum/2 {
-		return maximum
-	}
-	return current * 2
+	return background.Retry
 }

@@ -21,6 +21,7 @@ Implemented components:
 - Durable scan cursor with leases and fencing tokens
 - Standalone TRON indexer worker
 - Deposit addresses, deposit intents, and chain-event matching model
+- Standalone deposit matching and intent-expiration worker
 
 Not yet implemented: merchant APIs, automatic deposit posting, webhooks, payouts, wallet sweeping, risk screening, reconciliation, and production key infrastructure.
 
@@ -51,7 +52,13 @@ Before starting the TRON indexer, configure the node, asset contract, initial sc
 go run ./cmd/gateway-indexer
 ```
 
-The indexer reads finalized blocks only. It does not hold private keys or broadcast transactions. Database migrations must be applied independently before starting API or worker processes.
+Start the deposit matching worker:
+
+```bash
+go run ./cmd/gateway-deposit-worker
+```
+
+The indexer reads finalized blocks only. It does not hold private keys or broadcast transactions. The deposit worker consumes persisted chain events and supports multiple concurrent instances. Database migrations must be applied independently before starting API or worker processes.
 
 ## Security Boundary
 

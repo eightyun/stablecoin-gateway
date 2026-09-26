@@ -103,18 +103,6 @@ func TestNewWorkerRejectsInvalidConfiguration(t *testing.T) {
 	}
 }
 
-func TestRetryHelpers(t *testing.T) {
-	if got := nextRetry(4*time.Second, 5*time.Second); got != 5*time.Second {
-		t.Fatalf("nextRetry() = %v", got)
-	}
-	for range 100 {
-		got := jitter(10 * time.Second)
-		if got < 8*time.Second || got > 12*time.Second {
-			t.Fatalf("jitter() = %v", got)
-		}
-	}
-}
-
 func newTestWorker(t *testing.T, stepper Stepper) *Worker {
 	t.Helper()
 	worker, err := NewWorker(stepper, slog.New(slog.NewTextHandler(io.Discard, nil)), WorkerConfig{
