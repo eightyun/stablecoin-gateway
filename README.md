@@ -30,8 +30,10 @@ Gateway 是一个面向商户的生产级开源稳定币支付系统，目标覆
 - 基于 Transactional Outbox 的 Webhook Worker
 - Webhook HMAC 签名、指数退避、死信与逐次投递审计
 - 默认阻止私网目标、禁止重定向的 Webhook SSRF 防护
+- 商户出款申请、TRON 地址校验与原子余额冻结
+- 可用余额与冻结余额分离查询
 
-尚未完成：出款、归集、风控筛查、对账和生产钱包签名基础设施。
+尚未完成：出款风控/签名/广播/确认、归集、地址筛查、对账和生产钱包签名基础设施。
 
 ## 本地运行
 
@@ -95,7 +97,9 @@ Worker 默认拒绝私网、回环和链路本地目标，且不跟随重定向�
 
 - `POST /v1/deposits`：从商户地址池幂等创建充值意图
 - `GET /v1/deposits/{id}`：查询充值状态
-- `GET /v1/balances`：查询各资产可用余额
+- `GET /v1/balances`：查询各资产可用与冻结余额
+- `POST /v1/payouts`：幂等创建出款并原子冻结余额
+- `GET /v1/payouts/{id}`：查询出款状态
 
 创建充值时必须传 `Idempotency-Key`。金额使用资产最小单位的十进制整数字符串，例如 1 USDT（6 位精度）传 `"1000000"`。
 
@@ -114,6 +118,8 @@ UPPERCASE_METHOD\nREQUEST_URI\nTIMESTAMP\nNONCE\nSHA256_HEX(BODY)
 
 其中 `REQUEST_URI` 包含查询字符串。服务端默认接受前后 5 分钟时间窗，并在签名验证成功后原子消费 nonce。
 
+当前出款创建后进入 `pending_review`，资金从 `available` 转入 `frozen`，尚不会签名或广播链上交易。第一条出款网络只接受 TRON Base58Check 地址。
+
 ## Webhook
 
 当前投递 `deposit.confirmed`。事件信封固定为：
@@ -129,6 +135,12 @@ v1=HEX(HMAC_SHA256(secret, timestamp + "." + event_id + "." + raw_body))
 ```
 
 只有 2xx 响应视为成功。投递采用至少一次语义；商户必须以 `X-Gateway-Event-ID` 幂等消费。失败会指数退避并在达到上限后进入死信。
+
+## 网络测试门槛
+
+- 测试网：完成出款审批/筛查、隔离签名器接口、TRON 广播与确认 Worker 后开始，目标约为第一版完成度 75%～80%。
+- 主网灰度：测试网持续运行、三角对账、监控告警、灾难恢复演练和外部安全审计全部通过后，才允许白名单与小额限额灰度。
+- 主网不作为普通测试环境；任何主网验证都必须有明确损失上限、双人审批和停止开关。
 
 启动 TRON 索引器前，根据 [.env.example](.env.example) 配置节点、资产合约、扫描起点及其父区块哈希，然后运行：
 

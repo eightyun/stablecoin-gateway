@@ -13,6 +13,7 @@ import (
 	"github.com/eightyun/stablecoin-gateway/internal/database"
 	"github.com/eightyun/stablecoin-gateway/internal/deposit"
 	"github.com/eightyun/stablecoin-gateway/internal/merchantauth"
+	"github.com/eightyun/stablecoin-gateway/internal/payout"
 	httptransport "github.com/eightyun/stablecoin-gateway/internal/transport/http"
 )
 
@@ -53,7 +54,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	handler, err := httptransport.NewHandler(authenticator, depositStore, cfg.MaxRequestBodyBytes)
+	payoutStore, err := payout.NewStore(pool)
+	if err != nil {
+		return err
+	}
+	handler, err := httptransport.NewHandler(authenticator, depositStore, payoutStore, cfg.MaxRequestBodyBytes)
 	if err != nil {
 		return err
 	}

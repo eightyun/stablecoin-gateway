@@ -16,6 +16,7 @@ import (
 	"github.com/eightyun/stablecoin-gateway/internal/deposit"
 	"github.com/eightyun/stablecoin-gateway/internal/identity"
 	"github.com/eightyun/stablecoin-gateway/internal/merchantauth"
+	"github.com/eightyun/stablecoin-gateway/internal/payout"
 )
 
 var ErrInvalidHandlerConfig = errors.New("HTTP Handler 配置无效")
@@ -29,29 +30,40 @@ type DepositService interface {
 	ListBalances(context.Context, string) ([]deposit.Balance, error)
 }
 
+// PayoutService 定义商户 HTTP API 需要的出款能力。
+type PayoutService interface {
+	Create(context.Context, payout.Request) (payout.CreateResult, error)
+	Get(context.Context, string, string) (payout.Details, error)
+}
+
 // NewHandler 创建 HTTP 路由。
 func NewHandler(
 	authenticator merchantauth.RequestAuthenticator,
 	deposits DepositService,
+	payouts PayoutService,
 	maxRequestBodyBytes int64,
 ) (stdhttp.Handler, error) {
-	if authenticator == nil || deposits == nil || maxRequestBodyBytes <= 0 {
+	if authenticator == nil || deposits == nil || payouts == nil || maxRequestBodyBytes <= 0 {
 		return nil, ErrInvalidHandlerConfig
 	}
 	handler := &merchantHandler{
-		authenticator: authenticator, deposits: deposits, maxRequestBodyBytes: maxRequestBodyBytes,
+		authenticator: authenticator, deposits: deposits, payouts: payouts,
+		maxRequestBodyBytes: maxRequestBodyBytes,
 	}
 	mux := stdhttp.NewServeMux()
 	mux.HandleFunc("GET /healthz", health)
 	mux.HandleFunc("POST /v1/deposits", handler.createDeposit)
 	mux.HandleFunc("GET /v1/deposits/{id}", handler.getDeposit)
 	mux.HandleFunc("GET /v1/balances", handler.listBalances)
+	mux.HandleFunc("POST /v1/payouts", handler.createPayout)
+	mux.HandleFunc("GET /v1/payouts/{id}", handler.getPayout)
 	return mux, nil
 }
 
 type merchantHandler struct {
 	authenticator       merchantauth.RequestAuthenticator
 	deposits            DepositService
+	payouts             PayoutService
 	maxRequestBodyBytes int64
 }
 
@@ -60,6 +72,13 @@ type createDepositRequest struct {
 	AssetID           string `json:"asset_id"`
 	Amount            string `json:"amount"`
 	ExpiresInSeconds  int64  `json:"expires_in_seconds"`
+}
+
+type createPayoutRequest struct {
+	MerchantReference  string `json:"merchant_reference"`
+	AssetID            string `json:"asset_id"`
+	DestinationAddress string `json:"destination_address"`
+	Amount             string `json:"amount"`
 }
 
 func (handler *merchantHandler) createDeposit(writer stdhttp.ResponseWriter, request *stdhttp.Request) {
@@ -142,6 +161,65 @@ func (handler *merchantHandler) listBalances(writer stdhttp.ResponseWriter, requ
 	writeJSON(writer, stdhttp.StatusOK, map[string]any{"data": balances})
 }
 
+func (handler *merchantHandler) createPayout(writer stdhttp.ResponseWriter, request *stdhttp.Request) {
+	body, principal, ok := handler.authenticate(writer, request)
+	if !ok {
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(mediaType, "application/json") {
+		writeError(writer, stdhttp.StatusUnsupportedMediaType, "unsupported_media_type", "Content-Type 必须是 application/json")
+		return
+	}
+	var input createPayoutRequest
+	if err := decodeJSON(body, &input); err != nil {
+		writeError(writer, stdhttp.StatusBadRequest, "invalid_request", "请求 JSON 无效")
+		return
+	}
+	payoutID, err := identity.NewUUID()
+	if err != nil {
+		writeInternalError(writer, err)
+		return
+	}
+	result, err := handler.payouts.Create(request.Context(), payout.Request{
+		ID: payoutID, MerchantID: principal.MerchantID, AssetID: strings.TrimSpace(input.AssetID),
+		IdempotencyKey:     strings.TrimSpace(request.Header.Get(idempotencyHeader)),
+		MerchantReference:  strings.TrimSpace(input.MerchantReference),
+		DestinationAddress: strings.TrimSpace(input.DestinationAddress), Amount: strings.TrimSpace(input.Amount),
+	})
+	if err != nil {
+		writePayoutError(writer, err)
+		return
+	}
+	status := stdhttp.StatusOK
+	if result.Created {
+		status = stdhttp.StatusCreated
+	}
+	writeJSON(writer, status, map[string]any{"data": result.Payout})
+}
+
+func (handler *merchantHandler) getPayout(writer stdhttp.ResponseWriter, request *stdhttp.Request) {
+	body, principal, ok := handler.authenticate(writer, request)
+	if !ok {
+		return
+	}
+	if len(body) != 0 {
+		writeError(writer, stdhttp.StatusBadRequest, "invalid_request", "GET 请求不能包含请求体")
+		return
+	}
+	payoutID := strings.TrimSpace(request.PathValue("id"))
+	if !identity.ValidUUID(payoutID) {
+		writeError(writer, stdhttp.StatusBadRequest, "invalid_payout_id", "出款单 ID 无效")
+		return
+	}
+	result, err := handler.payouts.Get(request.Context(), principal.MerchantID, payoutID)
+	if err != nil {
+		writePayoutError(writer, err)
+		return
+	}
+	writeJSON(writer, stdhttp.StatusOK, map[string]any{"data": result})
+}
+
 func (handler *merchantHandler) authenticate(
 	writer stdhttp.ResponseWriter,
 	request *stdhttp.Request,
@@ -194,6 +272,24 @@ func writeDepositError(writer stdhttp.ResponseWriter, err error) {
 		writeError(writer, stdhttp.StatusConflict, "address_pool_empty", "暂无可用充值地址")
 	case errors.Is(err, deposit.ErrIntentNotFound):
 		writeError(writer, stdhttp.StatusNotFound, "deposit_not_found", "充值订单不存在")
+	default:
+		writeInternalError(writer, err)
+	}
+}
+
+func writePayoutError(writer stdhttp.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, payout.ErrInvalidRequest), errors.Is(err, payout.ErrAssetUnavailable),
+		errors.Is(err, payout.ErrUnsupportedNetwork):
+		writeError(writer, stdhttp.StatusBadRequest, "invalid_payout", "出款参数无效")
+	case errors.Is(err, payout.ErrPayoutConflict):
+		writeError(writer, stdhttp.StatusConflict, "idempotency_conflict", "幂等键已被不同请求使用")
+	case errors.Is(err, payout.ErrInsufficientBalance):
+		writeError(writer, stdhttp.StatusUnprocessableEntity, "insufficient_balance", "可用余额不足")
+	case errors.Is(err, payout.ErrMerchantUnavailable), errors.Is(err, payout.ErrLedgerUnavailable):
+		writeError(writer, stdhttp.StatusConflict, "payout_unavailable", "当前无法创建出款")
+	case errors.Is(err, payout.ErrPayoutNotFound):
+		writeError(writer, stdhttp.StatusNotFound, "payout_not_found", "出款单不存在")
 	default:
 		writeInternalError(writer, err)
 	}

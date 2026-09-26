@@ -62,6 +62,7 @@ type Balance struct {
 	Symbol          string `json:"symbol"`
 	Decimals        int16  `json:"decimals"`
 	Available       string `json:"available"`
+	Frozen          string `json:"frozen"`
 }
 
 // CreateIntentFromPool 幂等创建充值意图，并原子领取一个未使用地址。
@@ -195,13 +196,20 @@ func (store *Store) GetIntent(ctx context.Context, merchantID, intentID string) 
 func (store *Store) ListBalances(ctx context.Context, merchantID string) ([]Balance, error) {
 	rows, err := store.db.Query(ctx, `
 		SELECT asset.id, asset.network, asset.contract_address, asset.symbol, asset.decimals,
-		       COALESCE(SUM(
+		       COALESCE(SUM(CASE WHEN account.code = $2 THEN
 		           CASE
 		               WHEN journal.id IS NULL THEN 0
 		               WHEN entry.side = account.normal_side THEN entry.amount
 		               ELSE -entry.amount
 		           END
-		       ), 0)::TEXT AS available
+		       ELSE 0 END), 0)::TEXT AS available,
+		       COALESCE(SUM(CASE WHEN account.code = $3 THEN
+		           CASE
+		               WHEN journal.id IS NULL THEN 0
+		               WHEN entry.side = account.normal_side THEN entry.amount
+		               ELSE -entry.amount
+		           END
+		       ELSE 0 END), 0)::TEXT AS frozen
 		FROM ledger_accounts AS account
 		JOIN assets AS asset ON asset.id = account.asset_id
 		LEFT JOIN journal_entries AS entry ON entry.account_id = account.id
@@ -209,11 +217,11 @@ func (store *Store) ListBalances(ctx context.Context, merchantID string) ([]Bala
 		  ON journal.id = entry.transaction_id AND journal.status = 'posted'
 		WHERE account.owner_type = 'merchant'
 		  AND account.owner_id = $1
-		  AND account.code = $2
+		  AND account.code IN ($2, $3)
 		  AND account.status IN ('active', 'locked')
 		GROUP BY asset.id, asset.network, asset.contract_address, asset.symbol, asset.decimals
 		ORDER BY asset.id
-	`, merchantID, availableAccountCode)
+	`, merchantID, availableAccountCode, frozenAccountCode)
 	if err != nil {
 		return nil, fmt.Errorf("查询商户余额: %w", err)
 	}
@@ -223,7 +231,7 @@ func (store *Store) ListBalances(ctx context.Context, merchantID string) ([]Bala
 		var balance Balance
 		if err := rows.Scan(
 			&balance.AssetID, &balance.Network, &balance.ContractAddress, &balance.Symbol,
-			&balance.Decimals, &balance.Available,
+			&balance.Decimals, &balance.Available, &balance.Frozen,
 		); err != nil {
 			return nil, fmt.Errorf("读取商户余额: %w", err)
 		}

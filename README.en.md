@@ -30,8 +30,10 @@ Implemented components:
 - Transactional Outbox-based webhook worker
 - Webhook HMAC signatures, exponential backoff, dead lettering, and per-attempt delivery audit
 - Webhook SSRF protection that blocks private targets and redirects by default
+- Merchant payout requests with TRON address validation and atomic balance freezing
+- Separate available and frozen balance reporting
 
-Not yet implemented: payouts, wallet sweeping, risk screening, reconciliation, and production wallet-signing infrastructure.
+Not yet implemented: payout screening/signing/broadcasting/confirmation, wallet sweeping, address screening, reconciliation, and production wallet-signing infrastructure.
 
 ## Local Development
 
@@ -95,7 +97,9 @@ Available endpoints:
 
 - `POST /v1/deposits`: idempotently create a deposit intent from the merchant's address pool
 - `GET /v1/deposits/{id}`: retrieve deposit status
-- `GET /v1/balances`: retrieve available balances by asset
+- `GET /v1/balances`: retrieve available and frozen balances by asset
+- `POST /v1/payouts`: idempotently create a payout and atomically freeze funds
+- `GET /v1/payouts/{id}`: retrieve payout status
 
 Deposit creation requires `Idempotency-Key`. Amounts are decimal integer strings in the asset's smallest unit. For example, 1 USDT with 6 decimals is `"1000000"`.
 
@@ -114,6 +118,8 @@ UPPERCASE_METHOD\nREQUEST_URI\nTIMESTAMP\nNONCE\nSHA256_HEX(BODY)
 
 `REQUEST_URI` includes the query string. The server accepts a five-minute clock skew by default and atomically consumes the nonce after signature verification.
 
+New payouts currently enter `pending_review` and move funds from `available` to `frozen`; no transaction is signed or broadcast yet. The initial payout rail accepts TRON Base58Check addresses only.
+
 ## Webhooks
 
 The current event type is `deposit.confirmed`. The event envelope is stable:
@@ -129,6 +135,12 @@ v1=HEX(HMAC_SHA256(secret, timestamp + "." + event_id + "." + raw_body))
 ```
 
 Only 2xx responses are successful. Delivery is at least once, so merchants must consume idempotently using `X-Gateway-Event-ID`. Failures use exponential backoff and become dead letters after the configured attempt limit.
+
+## Network Testing Gates
+
+- Testnet starts after payout approval/screening, an isolated signer interface, and TRON broadcast and confirmation workers are implemented, at roughly 75%–80% first-release completion.
+- Mainnet canarying starts only after sustained testnet operation, three-way reconciliation, monitoring and alerting, disaster-recovery exercises, and an external security audit pass.
+- Mainnet is never a general test environment. Every mainnet canary requires a defined loss limit, dual approval, and an emergency stop.
 
 Before starting the TRON indexer, configure the node, asset contract, initial scan height, and its parent block hash using [.env.example](.env.example), then run:
 

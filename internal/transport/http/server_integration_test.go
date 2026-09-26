@@ -16,10 +16,12 @@ import (
 	"github.com/eightyun/stablecoin-gateway/internal/database"
 	"github.com/eightyun/stablecoin-gateway/internal/deposit"
 	"github.com/eightyun/stablecoin-gateway/internal/identity"
+	"github.com/eightyun/stablecoin-gateway/internal/ledger"
 	"github.com/eightyun/stablecoin-gateway/internal/merchantauth"
+	"github.com/eightyun/stablecoin-gateway/internal/payout"
 )
 
-func TestMerchantDepositAPIEndToEnd(t *testing.T) {
+func TestMerchantAPIEndToEnd(t *testing.T) {
 	databaseURL := os.Getenv("GATEWAY_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("未设置 GATEWAY_TEST_DATABASE_URL")
@@ -34,6 +36,9 @@ func TestMerchantDepositAPIEndToEnd(t *testing.T) {
 	merchantID := mustUUID(t)
 	assetID := "asset-" + mustToken(t, 16)
 	addressID := mustUUID(t)
+	custodyAccountID := mustUUID(t)
+	availableAccountID := mustUUID(t)
+	frozenAccountID := mustUUID(t)
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("开始测试数据事务: %v", err)
@@ -54,8 +59,9 @@ func TestMerchantDepositAPIEndToEnd(t *testing.T) {
 		INSERT INTO ledger_accounts (id, owner_type, owner_id, asset_id, code, normal_side, status)
 		VALUES
 			($1, 'platform', 'gateway', $3, 'custody', 'D', 'active'),
-			($2, 'merchant', $4, $3, 'available', 'C', 'active')
-	`, mustUUID(t), mustUUID(t), assetID, merchantID); err != nil {
+			($2, 'merchant', $4, $3, 'available', 'C', 'active'),
+			($5, 'merchant', $4, $3, 'frozen', 'C', 'active')
+	`, custodyAccountID, availableAccountID, assetID, merchantID, frozenAccountID); err != nil {
 		t.Fatalf("创建测试账本科目: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -66,6 +72,21 @@ func TestMerchantDepositAPIEndToEnd(t *testing.T) {
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("提交测试数据事务: %v", err)
+	}
+	ledgerRepository, err := ledger.NewPostgreSQLRepository(pool)
+	if err != nil {
+		t.Fatalf("ledger.NewPostgreSQLRepository() error = %v", err)
+	}
+	seedID := mustUUID(t)
+	if _, err := ledgerRepository.Post(ctx, ledger.Transaction{
+		ID: seedID, RequesterType: "system", RequesterID: "merchant-api-test",
+		IdempotencyKey: "seed:" + seedID, ReferenceType: "seed", ReferenceID: seedID,
+		Entries: []ledger.Entry{
+			{AccountID: custodyAccountID, AssetID: assetID, Side: ledger.Debit, Amount: 1_000_000},
+			{AccountID: availableAccountID, AssetID: assetID, Side: ledger.Credit, Amount: 1_000_000},
+		},
+	}); err != nil {
+		t.Fatalf("准备商户 API 测试余额: %v", err)
 	}
 
 	keyring, err := merchantauth.NewKeyring(map[string][]byte{"v1": bytes.Repeat([]byte{9}, 32)}, "v1")
@@ -88,7 +109,11 @@ func TestMerchantDepositAPIEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deposit.NewStore() error = %v", err)
 	}
-	handler, err := NewHandler(authenticator, depositStore, 1<<20)
+	payoutStore, err := payout.NewStore(pool)
+	if err != nil {
+		t.Fatalf("payout.NewStore() error = %v", err)
+	}
+	handler, err := NewHandler(authenticator, depositStore, payoutStore, 1<<20)
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)
 	}
@@ -116,6 +141,21 @@ func TestMerchantDepositAPIEndToEnd(t *testing.T) {
 	response = serveSigned(t, handler, credentials, http.MethodGet, "/v1/balances", nil, "")
 	if response.Code != http.StatusOK {
 		t.Fatalf("查询余额 response=%d body=%q", response.Code, response.Body.String())
+	}
+	payoutBody := []byte(`{"merchant_reference":"payout-e2e","asset_id":"` + assetID + `","destination_address":"T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb","amount":"400000"}`)
+	response = serveSigned(t, handler, credentials, http.MethodPost, "/v1/payouts", payoutBody, "payout-idem-e2e")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("创建出款 response=%d body=%q", response.Code, response.Body.String())
+	}
+	var createdPayout struct {
+		Data payout.Details `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &createdPayout); err != nil || createdPayout.Data.ID == "" || createdPayout.Data.Status != "pending_review" {
+		t.Fatalf("解析出款响应: %+v, %v", createdPayout, err)
+	}
+	response = serveSigned(t, handler, credentials, http.MethodGet, "/v1/payouts/"+createdPayout.Data.ID, nil, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("查询出款 response=%d body=%q", response.Code, response.Body.String())
 	}
 }
 

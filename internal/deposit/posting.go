@@ -19,6 +19,7 @@ const (
 	platformLedgerOwnerID = "gateway"
 	custodyAccountCode    = "custody"
 	availableAccountCode  = "available"
+	frozenAccountCode     = "frozen"
 )
 
 type matchedIntent struct {
