@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"testing"
+
+	"github.com/eightyun/stablecoin-gateway/internal/payout"
 )
 
 func TestParseCreateAPIKeyOptions(t *testing.T) {
@@ -34,5 +36,20 @@ func TestParseCreateWebhookEndpointOptions(t *testing.T) {
 	})
 	if err != nil || options.name != "orders" || options.url == "" {
 		t.Fatalf("parseCreateWebhookEndpointOptions() = %+v, %v", options, err)
+	}
+}
+
+func TestParseReviewPayoutOptions(t *testing.T) {
+	options, err := parseReviewPayoutOptions([]string{
+		"approve-payout", "--payout-id", "123e4567-e89b-42d3-a456-426614174000",
+		"--reviewer", "ops@example.com", "--reason", "screening passed",
+	}, payout.DecisionApprove)
+	if err != nil || options.reviewer != "ops@example.com" || options.reason != "screening passed" {
+		t.Fatalf("parseReviewPayoutOptions() = %+v, %v", options, err)
+	}
+	if _, err := parseReviewPayoutOptions([]string{
+		"reject-payout", "--payout-id", "invalid", "--reviewer", "ops", "--reason", "denied",
+	}, payout.DecisionReject); !errors.Is(err, errUsage) {
+		t.Fatalf("invalid parseReviewPayoutOptions() error = %v", err)
 	}
 }

@@ -31,9 +31,10 @@ Implemented components:
 - Webhook HMAC signatures, exponential backoff, dead lettering, and per-attempt delivery audit
 - Webhook SSRF protection that blocks private targets and redirects by default
 - Merchant payout requests with TRON address validation and atomic balance freezing
+- Audited payout review with atomic unfreezing on rejection
 - Separate available and frozen balance reporting
 
-Not yet implemented: payout screening/signing/broadcasting/confirmation, wallet sweeping, address screening, reconciliation, and production wallet-signing infrastructure.
+Not yet implemented: automated address screening, payout signing/broadcasting/confirmation, wallet sweeping, reconciliation, and production wallet-signing infrastructure.
 
 ## Local Development
 
@@ -91,6 +92,22 @@ go run ./cmd/gateway-webhook-worker
 
 The worker rejects private, loopback, and link-local targets and does not follow redirects by default. Set `GATEWAY_WEBHOOK_ALLOW_PRIVATE_NETWORKS=true` only when delivering to a trusted internal network is intentional.
 
+Approve or reject a pending payout:
+
+```bash
+go run ./cmd/gateway-admin approve-payout \
+  --payout-id '00000000-0000-0000-0000-000000000000' \
+  --reviewer 'ops@example.com' \
+  --reason 'manual screening passed'
+
+go run ./cmd/gateway-admin reject-payout \
+  --payout-id '00000000-0000-0000-0000-000000000000' \
+  --reviewer 'ops@example.com' \
+  --reason 'destination screening denied'
+```
+
+Approval moves the payout to `ready_for_broadcast`. Rejection returns frozen funds to the available balance in the same database transaction. Retrying an identical decision is idempotent; conflicting decisions fail.
+
 ## Merchant API
 
 Available endpoints:
@@ -118,7 +135,7 @@ UPPERCASE_METHOD\nREQUEST_URI\nTIMESTAMP\nNONCE\nSHA256_HEX(BODY)
 
 `REQUEST_URI` includes the query string. The server accepts a five-minute clock skew by default and atomically consumes the nonce after signature verification.
 
-New payouts currently enter `pending_review` and move funds from `available` to `frozen`; no transaction is signed or broadcast yet. The initial payout rail accepts TRON Base58Check addresses only.
+New payouts enter `pending_review` and move funds from `available` to `frozen`. Approval moves them to `ready_for_broadcast`, but no transaction is signed or broadcast yet. The initial payout rail accepts TRON Base58Check addresses only.
 
 ## Webhooks
 

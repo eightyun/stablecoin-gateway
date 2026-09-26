@@ -107,6 +107,119 @@ func TestStorePreventsConcurrentOverdraft(t *testing.T) {
 	}
 }
 
+func TestStoreApprovesPayoutIdempotently(t *testing.T) {
+	fixture := newPayoutFixture(t, 100)
+	created, err := fixture.store.Create(context.Background(), fixture.request(t, "approve-1", "approve-order-1", "60"))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	request := ReviewRequest{
+		PayoutID: created.Payout.ID, Decision: DecisionApprove,
+		Reviewer: "risk@example.com", Reason: "manual screening passed",
+	}
+	result, err := fixture.store.Review(context.Background(), request)
+	if err != nil || !result.Changed || result.Status != StatusReadyForBroadcast || result.UnfreezeTransactionID != "" {
+		t.Fatalf("Review() = %+v, %v", result, err)
+	}
+	available, frozen := fixture.balances(t)
+	if available != "40" || frozen != "60" {
+		t.Fatalf("审批后余额 available=%s frozen=%s", available, frozen)
+	}
+	details, err := fixture.store.Get(context.Background(), fixture.merchantID, created.Payout.ID)
+	if err != nil || details.Status != StatusReadyForBroadcast {
+		t.Fatalf("Get() = %+v, %v", details, err)
+	}
+	retry, err := fixture.store.Review(context.Background(), request)
+	if err != nil || retry.Changed || retry.ReviewedAt != result.ReviewedAt {
+		t.Fatalf("重复 Review() = %+v, %v", retry, err)
+	}
+	request.Decision = DecisionReject
+	if _, err := fixture.store.Review(context.Background(), request); !errors.Is(err, ErrPayoutStateConflict) {
+		t.Fatalf("冲突 Review() error = %v", err)
+	}
+}
+
+func TestStoreRejectsPayoutAndUnfreezesBalance(t *testing.T) {
+	fixture := newPayoutFixture(t, 100)
+	created, err := fixture.store.Create(context.Background(), fixture.request(t, "reject-1", "reject-order-1", "60"))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	request := ReviewRequest{
+		PayoutID: created.Payout.ID, Decision: DecisionReject,
+		Reviewer: "risk@example.com", Reason: "destination denied",
+	}
+	result, err := fixture.store.Review(context.Background(), request)
+	if err != nil || !result.Changed || result.Status != StatusRejected || result.UnfreezeTransactionID == "" {
+		t.Fatalf("Review() = %+v, %v", result, err)
+	}
+	available, frozen := fixture.balances(t)
+	if available != "100" || frozen != "0" {
+		t.Fatalf("拒绝后余额 available=%s frozen=%s", available, frozen)
+	}
+	assertFreezeJournal(
+		t, fixture.pool, result.UnfreezeTransactionID,
+		fixture.frozenAccountID, fixture.availableAccountID, "60",
+	)
+	retry, err := fixture.store.Review(context.Background(), request)
+	if err != nil || retry.Changed || retry.UnfreezeTransactionID != result.UnfreezeTransactionID {
+		t.Fatalf("重复 Review() = %+v, %v", retry, err)
+	}
+	request.Reason = "different reason"
+	if _, err := fixture.store.Review(context.Background(), request); !errors.Is(err, ErrPayoutStateConflict) {
+		t.Fatalf("冲突 Review() error = %v", err)
+	}
+}
+
+func TestStoreSerializesConcurrentPayoutReviews(t *testing.T) {
+	fixture := newPayoutFixture(t, 100)
+	created, err := fixture.store.Create(context.Background(), fixture.request(t, "review-race", "review-race-order", "60"))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	requests := []ReviewRequest{
+		{PayoutID: created.Payout.ID, Decision: DecisionApprove, Reviewer: "approver", Reason: "approved"},
+		{PayoutID: created.Payout.ID, Decision: DecisionReject, Reviewer: "rejector", Reason: "rejected"},
+	}
+	results := make(chan error, len(requests))
+	var waitGroup sync.WaitGroup
+	for _, request := range requests {
+		waitGroup.Add(1)
+		go func(request ReviewRequest) {
+			defer waitGroup.Done()
+			_, err := fixture.store.Review(context.Background(), request)
+			results <- err
+		}(request)
+	}
+	waitGroup.Wait()
+	close(results)
+	succeeded, conflicted := 0, 0
+	for err := range results {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrPayoutStateConflict):
+			conflicted++
+		default:
+			t.Fatalf("并发 Review() error = %v", err)
+		}
+	}
+	if succeeded != 1 || conflicted != 1 {
+		t.Fatalf("并发审批结果 succeeded=%d conflicted=%d", succeeded, conflicted)
+	}
+	details, err := fixture.store.Get(context.Background(), fixture.merchantID, created.Payout.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	available, frozen := fixture.balances(t)
+	if details.Status == StatusReadyForBroadcast && (available != "40" || frozen != "60") {
+		t.Fatalf("审批胜出余额 available=%s frozen=%s", available, frozen)
+	}
+	if details.Status == StatusRejected && (available != "100" || frozen != "0") {
+		t.Fatalf("拒绝胜出余额 available=%s frozen=%s", available, frozen)
+	}
+}
+
 func newPayoutFixture(t *testing.T, initialBalance int64) payoutFixture {
 	t.Helper()
 	databaseURL := os.Getenv("GATEWAY_TEST_DATABASE_URL")

@@ -17,11 +17,12 @@ import (
 	"github.com/eightyun/stablecoin-gateway/internal/database"
 	"github.com/eightyun/stablecoin-gateway/internal/identity"
 	"github.com/eightyun/stablecoin-gateway/internal/merchantauth"
+	"github.com/eightyun/stablecoin-gateway/internal/payout"
 	"github.com/eightyun/stablecoin-gateway/internal/secretbox"
 	"github.com/eightyun/stablecoin-gateway/internal/webhook"
 )
 
-var errUsage = errors.New("用法: gateway-admin create-api-key --merchant-id UUID --name NAME [--expires-at RFC3339] | create-webhook-endpoint --merchant-id UUID --name NAME --url HTTPS_URL")
+var errUsage = errors.New("用法: gateway-admin create-api-key --merchant-id UUID --name NAME [--expires-at RFC3339] | create-webhook-endpoint --merchant-id UUID --name NAME --url HTTPS_URL | approve-payout --payout-id UUID --reviewer ID --reason TEXT | reject-payout --payout-id UUID --reviewer ID --reason TEXT")
 
 type createAPIKeyOptions struct {
 	merchantID string
@@ -53,6 +54,10 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		return runCreateAPIKey(ctx, args, output)
 	case "create-webhook-endpoint":
 		return runCreateWebhookEndpoint(ctx, args, output)
+	case "approve-payout":
+		return runReviewPayout(ctx, args, output, payout.DecisionApprove)
+	case "reject-payout":
+		return runReviewPayout(ctx, args, output, payout.DecisionReject)
 	default:
 		return errUsage
 	}

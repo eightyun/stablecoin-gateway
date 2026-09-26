@@ -205,12 +205,12 @@ func (store *Store) Create(ctx context.Context, request Request) (result CreateR
 		INSERT INTO payouts (
 			id, merchant_id, asset_id, idempotency_key, merchant_reference,
 			request_hash, destination_address, amount, status, freeze_transaction_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending_review', $9)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id::TEXT, merchant_reference, destination_address, amount::TEXT,
 		          status, freeze_transaction_id::TEXT, created_at, updated_at
 	`, request.ID, request.MerchantID, request.AssetID, request.IdempotencyKey,
 		request.MerchantReference, requestHash, request.DestinationAddress, request.Amount,
-		postResult.TransactionID).Scan(
+		StatusPendingReview, postResult.TransactionID).Scan(
 		&details.ID, &details.MerchantReference, &details.DestinationAddress, &details.Amount,
 		&details.Status, &details.FreezeTransactionID, &details.CreatedAt, &details.UpdatedAt,
 	)

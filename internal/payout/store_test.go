@@ -37,3 +37,17 @@ func TestRequestFingerprintIgnoresGeneratedAndIdempotencyIDs(t *testing.T) {
 		t.Fatalf("重试摘要 first=%q second=%q error=%v", first, second, err)
 	}
 }
+
+func TestValidateReviewRequest(t *testing.T) {
+	request := ReviewRequest{
+		PayoutID: "123e4567-e89b-42d3-a456-426614174000",
+		Decision: DecisionApprove, Reviewer: "risk@example.com", Reason: "screening passed",
+	}
+	if status, err := validateReviewRequest(request); err != nil || status != StatusReadyForBroadcast {
+		t.Fatalf("validateReviewRequest() = %q, %v", status, err)
+	}
+	request.Decision = "unknown"
+	if _, err := validateReviewRequest(request); !errors.Is(err, ErrInvalidReview) {
+		t.Fatalf("validateReviewRequest() error = %v", err)
+	}
+}

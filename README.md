@@ -31,9 +31,10 @@ Gateway 是一个面向商户的生产级开源稳定币支付系统，目标覆
 - Webhook HMAC 签名、指数退避、死信与逐次投递审计
 - 默认阻止私网目标、禁止重定向的 Webhook SSRF 防护
 - 商户出款申请、TRON 地址校验与原子余额冻结
+- 带审计记录的出款审批，以及拒绝时的原子余额解冻
 - 可用余额与冻结余额分离查询
 
-尚未完成：出款风控/签名/广播/确认、归集、地址筛查、对账和生产钱包签名基础设施。
+尚未完成：自动地址筛查、出款签名/广播/确认、归集、对账和生产钱包签名基础设施。
 
 ## 本地运行
 
@@ -91,6 +92,22 @@ go run ./cmd/gateway-webhook-worker
 
 Worker 默认拒绝私网、回环和链路本地目标，且不跟随重定向。仅在明确需要投递到可信内网时设置 `GATEWAY_WEBHOOK_ALLOW_PRIVATE_NETWORKS=true`。
 
+审批或拒绝待审核出款：
+
+```bash
+go run ./cmd/gateway-admin approve-payout \
+  --payout-id '00000000-0000-0000-0000-000000000000' \
+  --reviewer 'ops@example.com' \
+  --reason 'manual screening passed'
+
+go run ./cmd/gateway-admin reject-payout \
+  --payout-id '00000000-0000-0000-0000-000000000000' \
+  --reviewer 'ops@example.com' \
+  --reason 'destination screening denied'
+```
+
+审批通过后出款进入 `ready_for_broadcast`；拒绝会在同一数据库事务中把冻结资金退回可用余额。命令重复执行相同决定是幂等的，冲突决定会失败。
+
 ## 商户 API
 
 当前接口：
@@ -118,7 +135,7 @@ UPPERCASE_METHOD\nREQUEST_URI\nTIMESTAMP\nNONCE\nSHA256_HEX(BODY)
 
 其中 `REQUEST_URI` 包含查询字符串。服务端默认接受前后 5 分钟时间窗，并在签名验证成功后原子消费 nonce。
 
-当前出款创建后进入 `pending_review`，资金从 `available` 转入 `frozen`，尚不会签名或广播链上交易。第一条出款网络只接受 TRON Base58Check 地址。
+当前出款创建后进入 `pending_review`，资金从 `available` 转入 `frozen`；审批通过后进入 `ready_for_broadcast`，但尚不会签名或广播链上交易。第一条出款网络只接受 TRON Base58Check 地址。
 
 ## Webhook
 
