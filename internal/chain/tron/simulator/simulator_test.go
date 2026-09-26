@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/eightyun/stablecoin-gateway/internal/chain/tron"
 	"github.com/eightyun/stablecoin-gateway/internal/chain/tron/simulator"
@@ -138,7 +139,7 @@ func TestBroadcastUnknownAndRecovery(t *testing.T) {
 	}
 
 	block := tron.Block{
-		Header:   tron.Header{Height: 1, Hash: "block-1", ParentHash: "genesis"},
+		Header:   tron.Header{Height: 1, Hash: "block-1", ParentHash: "genesis", Timestamp: time.Unix(1, 0).UTC()},
 		Receipts: []tron.Receipt{{TransactionID: transaction.ID, Outcome: tron.ExecutionFailed}},
 	}
 	if err := chain.AppendBlock(block); err != nil {
@@ -311,7 +312,7 @@ func newChain(t *testing.T) *simulator.Simulator {
 
 func transferBlock(height uint64, parent, hash, transactionID string) tron.Block {
 	return tron.Block{
-		Header:   tron.Header{Height: height, Hash: hash, ParentHash: parent},
+		Header:   tron.Header{Height: height, Hash: hash, ParentHash: parent, Timestamp: time.Unix(int64(height), 0).UTC()},
 		Receipts: []tron.Receipt{{TransactionID: transactionID, Outcome: tron.ExecutionSucceeded}},
 		Transfers: []tron.Transfer{{
 			ID: tron.EventID{

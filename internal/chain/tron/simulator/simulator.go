@@ -235,6 +235,7 @@ func validateBlock(network string, chain []tron.Block, block tron.Block) error {
 	previous := chain[len(chain)-1].Header
 	if block.Header.Height != previous.Height+1 ||
 		block.Header.Hash == "" ||
+		block.Header.Timestamp.IsZero() ||
 		block.Header.ParentHash != previous.Hash {
 		return fmt.Errorf("区块高度或父哈希不连续: %w", ErrInvalidBlock)
 	}

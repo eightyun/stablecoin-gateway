@@ -161,6 +161,7 @@ type wireBlock struct {
 		RawData struct {
 			Number     uint64 `json:"number"`
 			ParentHash string `json:"parentHash"`
+			Timestamp  int64  `json:"timestamp"`
 		} `json:"raw_data"`
 	} `json:"block_header"`
 	Transactions []wireTransaction `json:"transactions"`
@@ -206,6 +207,13 @@ func parseHeader(block wireBlock) (tron.Header, error) {
 	if !strings.HasPrefix(hash, expectedPrefix) {
 		return tron.Header{}, fmt.Errorf("区块 ID 与高度不一致: %w", ErrInvalidResponse)
 	}
+	if block.BlockHeader.RawData.Timestamp <= 0 {
+		return tron.Header{}, fmt.Errorf("区块时间无效: %w", ErrInvalidResponse)
+	}
+	blockTime := time.UnixMilli(block.BlockHeader.RawData.Timestamp).UTC()
+	if blockTime.Year() < 2018 || blockTime.Year() > 9999 {
+		return tron.Header{}, fmt.Errorf("区块时间超出支持范围: %w", ErrInvalidResponse)
+	}
 	parentHash := ""
 	if block.BlockHeader.RawData.Number > 0 {
 		parentHash, err = normalizedHash(block.BlockHeader.RawData.ParentHash)
@@ -213,7 +221,7 @@ func parseHeader(block wireBlock) (tron.Header, error) {
 			return tron.Header{}, err
 		}
 	}
-	return tron.Header{Height: block.BlockHeader.RawData.Number, Hash: hash, ParentHash: parentHash}, nil
+	return tron.Header{Height: block.BlockHeader.RawData.Number, Hash: hash, ParentHash: parentHash, Timestamp: blockTime}, nil
 }
 
 func parseTransactions(input []wireTransaction) ([]transactionSummary, error) {

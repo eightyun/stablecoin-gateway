@@ -55,7 +55,7 @@ func TestScannerAdvancesEmptyFinalizedBlock(t *testing.T) {
 	store, pool, network := newCursorFixture(t)
 	ctx := context.Background()
 	chain := newScannerChain(t, network)
-	if err := chain.AppendBlock(tron.Block{Header: tron.Header{Height: 1, Hash: "block-1", ParentHash: "genesis"}}); err != nil {
+	if err := chain.AppendBlock(tron.Block{Header: tron.Header{Height: 1, Hash: "block-1", ParentHash: "genesis", Timestamp: time.Unix(1, 0).UTC()}}); err != nil {
 		t.Fatalf("追加空区块: %v", err)
 	}
 	if err := chain.Solidify(1); err != nil {
@@ -97,8 +97,8 @@ func TestScannerEventConflictRollsBackWholeBlock(t *testing.T) {
 		t.Fatalf("建立游标: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO chain_events (network, contract, transaction_id, log_index, block_height, block_hash, from_address, to_address, amount)
-		VALUES ($1, 'USDT', 'tx-2', 1, 1, 'block-1', 'buyer-2', 'deposit', 999)
+		INSERT INTO chain_events (network, contract, transaction_id, log_index, block_height, block_hash, block_time, from_address, to_address, amount)
+		VALUES ($1, 'USDT', 'tx-2', 1, 1, 'block-1', to_timestamp(1), 'buyer-2', 'deposit', 999)
 	`, network); err != nil {
 		t.Fatalf("设置冲突历史事件: %v", err)
 	}
@@ -133,8 +133,8 @@ func TestScannerIdenticalEventCanBeReplayed(t *testing.T) {
 		t.Fatalf("建立游标: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO chain_events (network, contract, transaction_id, log_index, block_height, block_hash, from_address, to_address, amount)
-		VALUES ($1, 'USDT', 'tx-1', 0, 1, 'block-1', 'buyer', 'deposit', 100)
+		INSERT INTO chain_events (network, contract, transaction_id, log_index, block_height, block_hash, block_time, from_address, to_address, amount)
+		VALUES ($1, 'USDT', 'tx-1', 0, 1, 'block-1', to_timestamp(1), 'buyer', 'deposit', 100)
 	`, network); err != nil {
 		t.Fatalf("设置已有事件: %v", err)
 	}
@@ -236,7 +236,7 @@ func newTestScanner(t *testing.T, store *CursorStore, chain tron.FinalizedReader
 
 func scannerBlock(network string, height uint64, parent, hash, transactionID, amount string) tron.Block {
 	return tron.Block{
-		Header:   tron.Header{Height: height, Hash: hash, ParentHash: parent},
+		Header:   tron.Header{Height: height, Hash: hash, ParentHash: parent, Timestamp: time.Unix(int64(height), 0).UTC()},
 		Receipts: []tron.Receipt{{TransactionID: transactionID, Outcome: tron.ExecutionSucceeded}},
 		Transfers: []tron.Transfer{{
 			ID:   tron.EventID{Network: network, Contract: "USDT", TransactionID: transactionID},

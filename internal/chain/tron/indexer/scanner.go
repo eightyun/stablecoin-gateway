@@ -79,6 +79,7 @@ func (scanner *Scanner) Step(ctx context.Context) (result StepResult, err error)
 		return StepResult{}, fmt.Errorf("读取已固化区块 %d: %w", claim.NextHeight, err)
 	}
 	if block.Header.Height != uint64(claim.NextHeight) || block.Header.Hash == "" ||
+		block.Header.Timestamp.IsZero() ||
 		block.Header.Hash == claim.PreviousHash || block.Header.ParentHash != claim.PreviousHash ||
 		(block.Header.Height == head.Height && block.Header.Hash != head.Hash) {
 		return StepResult{}, ErrInvalidBlock
@@ -161,12 +162,12 @@ func insertEvent(ctx context.Context, transaction pgx.Tx, header tron.Header, tr
 	result, err := transaction.Exec(ctx, `
 		INSERT INTO chain_events (
 			network, contract, transaction_id, log_index, block_height,
-			block_hash, from_address, to_address, amount
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			block_hash, block_time, from_address, to_address, amount
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (network, contract, transaction_id, log_index) DO NOTHING
 	`, transfer.ID.Network, transfer.ID.Contract, transfer.ID.TransactionID,
 		int64(transfer.ID.LogIndex), int64(header.Height), header.Hash,
-		transfer.From, transfer.To, transfer.Amount)
+		header.Timestamp, transfer.From, transfer.To, transfer.Amount)
 	if err != nil {
 		return fmt.Errorf("保存链事件: %w", err)
 	}
@@ -175,15 +176,16 @@ func insertEvent(ctx context.Context, transaction pgx.Tx, header tron.Header, tr
 	}
 	var height int64
 	var hash, from, to, amount string
+	var blockTime time.Time
 	if err := transaction.QueryRow(ctx, `
-		SELECT block_height, block_hash, from_address, to_address, amount::TEXT
+		SELECT block_height, block_hash, block_time, from_address, to_address, amount::TEXT
 		FROM chain_events
 		WHERE network = $1 AND contract = $2 AND transaction_id = $3 AND log_index = $4
 	`, transfer.ID.Network, transfer.ID.Contract, transfer.ID.TransactionID,
-		int64(transfer.ID.LogIndex)).Scan(&height, &hash, &from, &to, &amount); err != nil {
+		int64(transfer.ID.LogIndex)).Scan(&height, &hash, &blockTime, &from, &to, &amount); err != nil {
 		return fmt.Errorf("核对重复链事件: %w", err)
 	}
-	if height != int64(header.Height) || hash != header.Hash || from != transfer.From ||
+	if height != int64(header.Height) || hash != header.Hash || !blockTime.Equal(header.Timestamp) || from != transfer.From ||
 		to != transfer.To || amount != transfer.Amount {
 		return fmt.Errorf("%s/%s/%s/%d: %w", transfer.ID.Network, transfer.ID.Contract,
 			transfer.ID.TransactionID, transfer.ID.LogIndex, ErrEventConflict)

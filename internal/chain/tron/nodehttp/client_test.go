@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eightyun/stablecoin-gateway/internal/chain/tron"
 	"github.com/eightyun/stablecoin-gateway/internal/chain/tron/nodehttp"
@@ -21,6 +22,8 @@ const (
 	from       = "411111111111111111111111111111111111111111"
 	to         = "412222222222222222222222222222222222222222"
 )
+
+var blockTime = time.Unix(1_700_000_000, 0).UTC()
 
 func TestClientReadsFinalizedBlockAndTransfer(t *testing.T) {
 	server := newNodeServer(t, func(writer http.ResponseWriter, request *http.Request) {
@@ -42,7 +45,7 @@ func TestClientReadsFinalizedBlockAndTransfer(t *testing.T) {
 	client := newClient(t, server.URL+"/node/", "secret", 0)
 
 	head, err := client.SolidifiedHead(context.Background())
-	if err != nil || head != (tron.Header{Height: 1, Hash: blockHash, ParentHash: parentHash}) {
+	if err != nil || head != (tron.Header{Height: 1, Hash: blockHash, ParentHash: parentHash, Timestamp: blockTime}) {
 		t.Fatalf("SolidifiedHead() = %+v, %v", head, err)
 	}
 	block, err := client.SolidifiedBlockByHeight(context.Background(), 1)
@@ -207,7 +210,7 @@ func blockJSON(results []string) string {
 		}
 		transactions = fmt.Sprintf(`,"transactions":[{"txID":%q,"ret":[%s]}]`, txID, strings.Join(parts, ","))
 	}
-	return fmt.Sprintf(`{"blockID":%q,"block_header":{"raw_data":{"number":1,"parentHash":%q}}%s}`, blockHash, parentHash, transactions)
+	return fmt.Sprintf(`{"blockID":%q,"block_header":{"raw_data":{"number":1,"parentHash":%q,"timestamp":1700000000000}}%s}`, blockHash, parentHash, transactions)
 }
 
 func transferTopic() string {

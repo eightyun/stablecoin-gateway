@@ -4,15 +4,17 @@ package tron
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 var ErrBlockNotFound = errors.New("区块不存在")
 
-// Header 标识一条链上的区块。Hash 与 ParentHash 使用节点返回的规范化表示。
+// Header 标识一条链上的区块。Hash 与 ParentHash 使用节点返回的规范化表示，Timestamp 是 UTC 链上时间。
 type Header struct {
 	Height     uint64
 	Hash       string
 	ParentHash string
+	Timestamp  time.Time
 }
 
 // EventID 标识一条 TRC20 日志。LogIndex 是交易 Receipt 中的原始日志位置。
