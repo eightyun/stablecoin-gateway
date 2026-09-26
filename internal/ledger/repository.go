@@ -14,6 +14,7 @@ import (
 
 var (
 	ErrDatabaseRequired    = errors.New("数据库连接不能为空")
+	ErrTransactionRequired = errors.New("数据库事务不能为空")
 	ErrIdempotencyConflict = errors.New("幂等键或业务引用已被不同请求使用")
 )
 
@@ -43,6 +44,31 @@ func NewPostgreSQLRepository(db *pgxpool.Pool) (*PostgreSQLRepository, error) {
 
 // Post 校验并原子写入交易。相同幂等请求返回首次创建的交易。
 func (repository *PostgreSQLRepository) Post(ctx context.Context, transaction Transaction) (result PostResult, err error) {
+	databaseTransaction, err := repository.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return PostResult{}, fmt.Errorf("开始账务事务: %w", err)
+	}
+	defer func() {
+		rollbackErr := databaseTransaction.Rollback(context.Background())
+		if rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+			err = errors.Join(err, fmt.Errorf("回滚账务事务: %w", rollbackErr))
+		}
+	}()
+	result, err = PostInTransaction(ctx, databaseTransaction, transaction)
+	if err != nil {
+		return PostResult{}, err
+	}
+	if err = databaseTransaction.Commit(ctx); err != nil {
+		return PostResult{}, fmt.Errorf("提交账务事务: %w", err)
+	}
+	return result, nil
+}
+
+// PostInTransaction 在调用方事务中校验并原子写入账务交易和分录，但不提交事务。
+func PostInTransaction(ctx context.Context, databaseTransaction pgx.Tx, transaction Transaction) (PostResult, error) {
+	if databaseTransaction == nil {
+		return PostResult{}, ErrTransactionRequired
+	}
 	if err := ValidateTransaction(transaction); err != nil {
 		return PostResult{}, err
 	}
@@ -51,20 +77,6 @@ func (repository *PostgreSQLRepository) Post(ctx context.Context, transaction Tr
 	if err != nil {
 		return PostResult{}, err
 	}
-
-	databaseTransaction, err := repository.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
-	if err != nil {
-		return PostResult{}, fmt.Errorf("开始账务事务: %w", err)
-	}
-	defer func() {
-		if err == nil {
-			return
-		}
-		rollbackErr := databaseTransaction.Rollback(ctx)
-		if rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
-			err = errors.Join(err, fmt.Errorf("回滚账务事务: %w", rollbackErr))
-		}
-	}()
 
 	var transactionID string
 	err = databaseTransaction.QueryRow(ctx, `
@@ -84,14 +96,7 @@ func (repository *PostgreSQLRepository) Post(ctx context.Context, transaction Tr
 		requestHash,
 	).Scan(&transactionID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		result, err = existingPostResult(ctx, databaseTransaction, transaction, requestHash)
-		if err != nil {
-			return PostResult{}, err
-		}
-		if err = databaseTransaction.Commit(ctx); err != nil {
-			return PostResult{}, fmt.Errorf("提交幂等查询事务: %w", err)
-		}
-		return result, nil
+		return existingPostResult(ctx, databaseTransaction, transaction, requestHash)
 	}
 	if err != nil {
 		return PostResult{}, fmt.Errorf("创建账务交易: %w", err)
@@ -125,10 +130,6 @@ func (repository *PostgreSQLRepository) Post(ctx context.Context, transaction Tr
 	}
 	if commandTag.RowsAffected() != 1 {
 		return PostResult{}, errors.New("账务交易状态已变化")
-	}
-
-	if err = databaseTransaction.Commit(ctx); err != nil {
-		return PostResult{}, fmt.Errorf("提交账务事务: %w", err)
 	}
 
 	return PostResult{TransactionID: transactionID, Created: true}, nil

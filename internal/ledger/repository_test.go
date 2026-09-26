@@ -1,6 +1,9 @@
 package ledger
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestRequestFingerprint(t *testing.T) {
 	base := Transaction{
@@ -47,5 +50,12 @@ func TestNewPostgreSQLRepositoryRejectsNilDatabase(t *testing.T) {
 	_, err := NewPostgreSQLRepository(nil)
 	if err != ErrDatabaseRequired {
 		t.Fatalf("NewPostgreSQLRepository() error = %v, 期望 %v", err, ErrDatabaseRequired)
+	}
+}
+
+func TestPostInTransactionRejectsNilTransaction(t *testing.T) {
+	_, err := PostInTransaction(context.Background(), nil, Transaction{})
+	if err != ErrTransactionRequired {
+		t.Fatalf("PostInTransaction() error = %v, 期望 %v", err, ErrTransactionRequired)
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+
+	"github.com/eightyun/stablecoin-gateway/internal/ledger"
 )
 
 type matcherStub struct {
@@ -79,6 +81,18 @@ func TestWorkerStopsOnInvalidExpiryLimit(t *testing.T) {
 		expire: func(context.Context, int) (int64, error) { return 0, ErrInvalidLimit },
 	})
 	if err := worker.Run(context.Background()); !errors.Is(err, ErrInvalidLimit) {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
+func TestWorkerStopsOnLedgerIdempotencyConflict(t *testing.T) {
+	worker := newTestDepositWorker(t, matcherStub{
+		match: func(context.Context) (MatchResult, error) {
+			return MatchResult{}, ledger.ErrIdempotencyConflict
+		},
+		expire: func(context.Context, int) (int64, error) { return 0, nil },
+	})
+	if err := worker.Run(context.Background()); !errors.Is(err, ledger.ErrIdempotencyConflict) {
 		t.Fatalf("Run() error = %v", err)
 	}
 }

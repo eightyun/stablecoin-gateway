@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/eightyun/stablecoin-gateway/internal/background"
+	"github.com/eightyun/stablecoin-gateway/internal/ledger"
 )
 
 var ErrInvalidWorker = errors.New("充值匹配 Worker 配置无效")
@@ -50,7 +51,7 @@ func NewWorker(matcher Matcher, logger *slog.Logger, config WorkerConfig) (*Work
 		RetryMin:         config.RetryMin,
 		RetryMax:         config.RetryMax,
 	}, func(err error) background.Decision {
-		if errors.Is(err, ErrInvalidLimit) {
+		if errors.Is(err, ErrInvalidLimit) || errors.Is(err, ledger.ErrIdempotencyConflict) {
 			return background.Stop
 		}
 		return background.Retry
@@ -87,6 +88,8 @@ func (operation *matchingOperation) RunOnce(ctx context.Context) (bool, error) {
 			"intent_id", result.IntentID,
 			"intent_status", result.IntentStatus,
 			"reason", result.Reason,
+			"credited", result.Credited,
+			"ledger_transaction_id", result.LedgerTransactionID,
 		)
 	}
 

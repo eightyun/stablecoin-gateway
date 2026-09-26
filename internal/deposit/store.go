@@ -23,6 +23,7 @@ var (
 	ErrAddressConflict    = errors.New("充值地址已被不同商户或资产使用")
 	ErrIntentConflict     = errors.New("充值意图幂等键或业务引用冲突")
 	ErrAddressUnavailable = errors.New("充值地址不存在、已停用或归属不匹配")
+	ErrLedgerUnavailable  = errors.New("充值所需账本科目不存在或已停用")
 	ErrInvalidLimit       = errors.New("处理数量限制无效")
 )
 
@@ -59,14 +60,16 @@ type CreateResult struct {
 
 // MatchResult 表示一次链事件匹配结果。
 type MatchResult struct {
-	Processed      bool
-	TransactionID  string
-	LogIndex       uint32
-	IntentID       string
-	MatchStatus    string
-	Reason         string
-	IntentStatus   string
-	ReceivedAmount string
+	Processed           bool
+	TransactionID       string
+	LogIndex            uint32
+	IntentID            string
+	MatchStatus         string
+	Reason              string
+	IntentStatus        string
+	ReceivedAmount      string
+	Credited            bool
+	LedgerTransactionID string
 }
 
 // NewStore 创建充值仓储。
@@ -131,6 +134,20 @@ func (store *Store) CreateIntent(ctx context.Context, intent Intent) (CreateResu
 		FROM deposit_addresses AS address
 		JOIN merchants AS merchant ON merchant.id = address.merchant_id
 		JOIN assets AS asset ON asset.id = address.asset_id
+		JOIN ledger_accounts AS custody
+		  ON custody.owner_type = 'platform'
+		 AND custody.owner_id = $10
+		 AND custody.asset_id = asset.id
+		 AND custody.code = $11
+		 AND custody.normal_side = 'D'
+		 AND custody.status = 'active'
+		JOIN ledger_accounts AS available
+		  ON available.owner_type = 'merchant'
+		 AND available.owner_id = merchant.id::TEXT
+		 AND available.asset_id = asset.id
+		 AND available.code = $12
+		 AND available.normal_side = 'C'
+		 AND available.status = 'active'
 		WHERE address.id = $4
 		  AND address.merchant_id = $2
 		  AND address.asset_id = $3
@@ -141,7 +158,8 @@ func (store *Store) CreateIntent(ctx context.Context, intent Intent) (CreateResu
 		RETURNING id
 	`, intent.ID, intent.MerchantID, intent.AssetID, intent.DepositAddressID,
 		intent.IdempotencyKey, intent.MerchantReference, requestHash,
-		intent.ExpectedAmount, intent.ExpiresAt.UTC()).Scan(&id)
+		intent.ExpectedAmount, intent.ExpiresAt.UTC(), platformLedgerOwnerID,
+		custodyAccountCode, availableAccountCode).Scan(&id)
 	if err == nil {
 		return CreateResult{ID: id, Created: true}, nil
 	}
@@ -151,7 +169,57 @@ func (store *Store) CreateIntent(ctx context.Context, intent Intent) (CreateResu
 	if existing, found, err := store.findExistingIntent(ctx, intent, requestHash); err != nil || found {
 		return existing, err
 	}
-	return CreateResult{}, ErrAddressUnavailable
+	addressAvailable, accountsAvailable, err := store.intentPrerequisites(ctx, intent)
+	if err != nil {
+		return CreateResult{}, err
+	}
+	if !addressAvailable {
+		return CreateResult{}, ErrAddressUnavailable
+	}
+	if !accountsAvailable {
+		return CreateResult{}, ErrLedgerUnavailable
+	}
+	return CreateResult{}, errors.New("充值意图创建条件在并发处理中发生变化")
+}
+
+func (store *Store) intentPrerequisites(ctx context.Context, intent Intent) (bool, bool, error) {
+	var addressAvailable, accountsAvailable bool
+	err := store.db.QueryRow(ctx, `
+		SELECT
+			EXISTS (
+				SELECT 1
+				FROM deposit_addresses AS address
+				JOIN merchants AS merchant ON merchant.id = address.merchant_id
+				JOIN assets AS asset ON asset.id = address.asset_id
+				WHERE address.id = $1
+				  AND address.merchant_id = $2
+				  AND address.asset_id = $3
+				  AND address.status = 'active'
+				  AND merchant.status = 'active'
+				  AND asset.status = 'active'
+			),
+			EXISTS (
+				SELECT 1
+				FROM ledger_accounts AS custody
+				JOIN ledger_accounts AS available ON available.asset_id = custody.asset_id
+				WHERE custody.owner_type = 'platform'
+				  AND custody.owner_id = $4
+				  AND custody.asset_id = $3
+				  AND custody.code = $5
+				  AND custody.normal_side = 'D'
+				  AND custody.status = 'active'
+				  AND available.owner_type = 'merchant'
+				  AND available.owner_id = $2::TEXT
+				  AND available.code = $6
+				  AND available.normal_side = 'C'
+				  AND available.status = 'active'
+			)
+	`, intent.DepositAddressID, intent.MerchantID, intent.AssetID, platformLedgerOwnerID,
+		custodyAccountCode, availableAccountCode).Scan(&addressAvailable, &accountsAvailable)
+	if err != nil {
+		return false, false, fmt.Errorf("检查充值意图前置条件: %w", err)
+	}
+	return addressAvailable, accountsAvailable, nil
 }
 
 func (store *Store) existingAddress(ctx context.Context, address Address) (CreateResult, error) {

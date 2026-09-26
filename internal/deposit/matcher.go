@@ -57,60 +57,37 @@ func (store *Store) MatchNext(ctx context.Context) (result MatchResult, err erro
 		return MatchResult{}, fmt.Errorf("领取待匹配链事件: %w", err)
 	}
 
-	var intentID string
-	var createdAt, expiresAt time.Time
+	var intent matchedIntent
 	err = transaction.QueryRow(ctx, `
-		SELECT id, created_at, expires_at
+		SELECT id, merchant_id::TEXT, asset_id, merchant_reference,
+		       created_at, expires_at, expected_amount::TEXT, received_amount::TEXT
 		FROM deposit_intents
 		WHERE deposit_address_id = $1
 		FOR UPDATE
-	`, addressID).Scan(&intentID, &createdAt, &expiresAt)
+	`, addressID).Scan(
+		&intent.ID, &intent.MerchantID, &intent.AssetID, &intent.MerchantReference,
+		&intent.CreatedAt, &intent.ExpiresAt, &intent.ExpectedAmount, &intent.ReceivedAmount,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, "", amount, "no_intent")
 	} else if err != nil {
 		return MatchResult{}, fmt.Errorf("查询充值意图: %w", err)
 	} else if assetStatus != "active" {
-		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intentID, amount, "asset_disabled")
+		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intent.ID, amount, "asset_disabled")
 	} else if merchantStatus != "active" {
-		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intentID, amount, "merchant_inactive")
+		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intent.ID, amount, "merchant_inactive")
 	} else if addressStatus != "active" {
-		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intentID, amount, "address_retired")
+		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intent.ID, amount, "address_retired")
 	} else if blockTime == nil {
-		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intentID, amount, "missing_block_time")
-	} else if blockTime.Before(createdAt) {
-		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intentID, amount, "before_intent")
-	} else if blockTime.After(expiresAt) {
-		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intentID, amount, "after_expiry")
+		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intent.ID, amount, "missing_block_time")
+	} else if blockTime.Before(intent.CreatedAt) {
+		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intent.ID, amount, "before_intent")
+	} else if blockTime.After(intent.ExpiresAt) {
+		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intent.ID, amount, "after_expiry")
 	} else {
-		var intentStatus, receivedAmount string
-		err = transaction.QueryRow(ctx, `
-			UPDATE deposit_intents
-			SET received_amount = received_amount + $2::NUMERIC,
-			    status = CASE
-			        WHEN received_amount + $2::NUMERIC < expected_amount THEN 'partially_paid'
-			        WHEN received_amount + $2::NUMERIC = expected_amount THEN 'paid'
-			        ELSE 'overpaid'
-			    END,
-			    updated_at = clock_timestamp()
-			WHERE id = $1
-			RETURNING status, received_amount::TEXT
-		`, intentID, amount).Scan(&intentStatus, &receivedAmount)
-		if err != nil {
-			return MatchResult{}, fmt.Errorf("累计充值金额: %w", err)
-		}
-		_, err = transaction.Exec(ctx, `
-			INSERT INTO deposit_event_matches (
-				network, contract, transaction_id, log_index, deposit_address_id,
-				deposit_intent_id, status, amount
-			) VALUES ($1, $2, $3, $4, $5, $6, 'matched', $7)
-		`, network, contract, transactionID, logIndex, addressID, intentID, amount)
-		if err != nil {
-			return MatchResult{}, fmt.Errorf("记录充值匹配: %w", err)
-		}
-		result = MatchResult{
-			Processed: true, TransactionID: transactionID, LogIndex: uint32(logIndex),
-			IntentID: intentID, MatchStatus: "matched", IntentStatus: intentStatus, ReceivedAmount: receivedAmount,
-		}
+		result, err = applyMatchedPayment(
+			ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intent, amount,
+		)
 	}
 	if err != nil {
 		return MatchResult{}, err

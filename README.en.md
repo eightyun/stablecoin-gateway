@@ -22,8 +22,9 @@ Implemented components:
 - Standalone TRON indexer worker
 - Deposit addresses, deposit intents, and chain-event matching model
 - Standalone deposit matching and intent-expiration worker
+- Atomic double-entry posting and `deposit.confirmed` Outbox events for exact deposits
 
-Not yet implemented: merchant APIs, automatic deposit posting, webhooks, payouts, wallet sweeping, risk screening, reconciliation, and production key infrastructure.
+Not yet implemented: merchant APIs, webhook delivery, payouts, wallet sweeping, risk screening, reconciliation, and production key infrastructure.
 
 ## Local Development
 

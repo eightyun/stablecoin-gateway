@@ -50,9 +50,11 @@ func TestStoreCreatesIntentAndMatchesExactPayment(t *testing.T) {
 	insertChainEvent(t, pool, fixture, "tx-exact", 0, 1, time.Now().Add(time.Minute), "1000000")
 	matched, err := store.MatchNext(ctx)
 	if err != nil || !matched.Processed || matched.MatchStatus != "matched" ||
-		matched.IntentStatus != "paid" || matched.ReceivedAmount != "1000000" {
+		matched.IntentStatus != "paid" || matched.ReceivedAmount != "1000000" ||
+		!matched.Credited || matched.LedgerTransactionID == "" {
 		t.Fatalf("MatchNext() = %+v, %v", matched, err)
 	}
+	assertDepositPosting(t, pool, intent.ID, matched.LedgerTransactionID, "1000000")
 	if empty, err := store.MatchNext(ctx); err != nil || empty.Processed {
 		t.Fatalf("重复 MatchNext() = %+v, %v", empty, err)
 	}
@@ -81,9 +83,48 @@ func TestStoreAccumulatesPartialAndOverpayment(t *testing.T) {
 		t.Fatalf("首次 MatchNext() = %+v, %v", first, err)
 	}
 	second, err := store.MatchNext(ctx)
-	if err != nil || second.IntentStatus != "overpaid" || second.ReceivedAmount != "110" {
+	if err != nil || second.MatchStatus != "review" || second.Reason != "overpaid" ||
+		second.IntentStatus != "overpaid" || second.ReceivedAmount != "110" || second.Credited {
 		t.Fatalf("再次 MatchNext() = %+v, %v", second, err)
 	}
+	var transactionCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM journal_transactions
+		WHERE reference_type = 'deposit' AND reference_id = $1
+	`, intent.ID).Scan(&transactionCount); err != nil || transactionCount != 0 {
+		t.Fatalf("超付账务交易数 = %d, %v", transactionCount, err)
+	}
+}
+
+func TestStoreCreditsCumulativeExactPaymentOnce(t *testing.T) {
+	store, pool, fixture := newDepositFixture(t)
+	ctx := context.Background()
+	addressID := randomUUID(t)
+	if _, err := store.RegisterAddress(ctx, Address{
+		ID: addressID, MerchantID: fixture.merchantID, AssetID: fixture.assetID, Address: fixture.address,
+	}); err != nil {
+		t.Fatalf("RegisterAddress() error = %v", err)
+	}
+	intent := Intent{
+		ID: randomUUID(t), MerchantID: fixture.merchantID, AssetID: fixture.assetID,
+		DepositAddressID: addressID, IdempotencyKey: "idem-cumulative", MerchantReference: "order-cumulative",
+		ExpectedAmount: "100", ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if _, err := store.CreateIntent(ctx, intent); err != nil {
+		t.Fatalf("CreateIntent() error = %v", err)
+	}
+	blockTime := time.Now().Add(time.Minute)
+	insertChainEvent(t, pool, fixture, "tx-cumulative-1", 0, 1, blockTime, "40")
+	insertChainEvent(t, pool, fixture, "tx-cumulative-2", 0, 2, blockTime.Add(time.Second), "60")
+	first, err := store.MatchNext(ctx)
+	if err != nil || first.IntentStatus != "partially_paid" || first.Credited {
+		t.Fatalf("首次 MatchNext() = %+v, %v", first, err)
+	}
+	second, err := store.MatchNext(ctx)
+	if err != nil || second.IntentStatus != "paid" || !second.Credited {
+		t.Fatalf("再次 MatchNext() = %+v, %v", second, err)
+	}
+	assertDepositPosting(t, pool, intent.ID, second.LedgerTransactionID, "100")
 }
 
 func TestStoreRoutesUnmatchedAndLateEventsToReview(t *testing.T) {
@@ -175,12 +216,63 @@ func TestStoreExpiresDueIntents(t *testing.T) {
 	}
 }
 
+func TestStoreRoutesExactPaymentToReviewWhenLedgerAccountIsLocked(t *testing.T) {
+	store, pool, fixture := newDepositFixture(t)
+	ctx := context.Background()
+	addressID := randomUUID(t)
+	if _, err := store.RegisterAddress(ctx, Address{
+		ID: addressID, MerchantID: fixture.merchantID, AssetID: fixture.assetID, Address: fixture.address,
+	}); err != nil {
+		t.Fatalf("RegisterAddress() error = %v", err)
+	}
+	intent := Intent{
+		ID: randomUUID(t), MerchantID: fixture.merchantID, AssetID: fixture.assetID,
+		DepositAddressID: addressID, IdempotencyKey: "idem-locked", MerchantReference: "order-locked",
+		ExpectedAmount: "10", ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if _, err := store.CreateIntent(ctx, intent); err != nil {
+		t.Fatalf("CreateIntent() error = %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE ledger_accounts SET status = 'locked' WHERE id = $1`, fixture.availableAccountID); err != nil {
+		t.Fatalf("锁定商户账本科目: %v", err)
+	}
+	insertChainEvent(t, pool, fixture, "tx-account-locked", 0, 1, time.Now().Add(time.Minute), "10")
+	result, err := store.MatchNext(ctx)
+	if err != nil || result.MatchStatus != "review" || result.Reason != "ledger_account_unavailable" || result.Credited {
+		t.Fatalf("MatchNext() = %+v, %v", result, err)
+	}
+}
+
+func TestStoreRejectsIntentWhenLedgerAccountIsUnavailable(t *testing.T) {
+	store, pool, fixture := newDepositFixture(t)
+	ctx := context.Background()
+	addressID := randomUUID(t)
+	if _, err := store.RegisterAddress(ctx, Address{
+		ID: addressID, MerchantID: fixture.merchantID, AssetID: fixture.assetID, Address: fixture.address,
+	}); err != nil {
+		t.Fatalf("RegisterAddress() error = %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE ledger_accounts SET status = 'locked' WHERE id = $1`, fixture.availableAccountID); err != nil {
+		t.Fatalf("锁定商户账本科目: %v", err)
+	}
+	_, err := store.CreateIntent(ctx, Intent{
+		ID: randomUUID(t), MerchantID: fixture.merchantID, AssetID: fixture.assetID,
+		DepositAddressID: addressID, IdempotencyKey: "idem-no-account", MerchantReference: "order-no-account",
+		ExpectedAmount: "10", ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if !errors.Is(err, ErrLedgerUnavailable) {
+		t.Fatalf("CreateIntent() error = %v", err)
+	}
+}
+
 type depositFixture struct {
-	network    string
-	contract   string
-	assetID    string
-	merchantID string
-	address    string
+	network            string
+	contract           string
+	assetID            string
+	merchantID         string
+	address            string
+	custodyAccountID   string
+	availableAccountID string
 }
 
 func newDepositFixture(t *testing.T) (*Store, *pgxpool.Pool, depositFixture) {
@@ -201,6 +293,7 @@ func newDepositFixture(t *testing.T) (*Store, *pgxpool.Pool, depositFixture) {
 	fixture := depositFixture{
 		network: "tron-" + randomHex(t, 6), contract: "41" + randomHex(t, 20),
 		assetID: "asset-" + randomHex(t, 6), merchantID: randomUUID(t), address: "41" + randomHex(t, 20),
+		custodyAccountID: randomUUID(t), availableAccountID: randomUUID(t),
 	}
 	if _, err := pool.Exec(context.Background(), `
 		INSERT INTO assets (id, network, contract_address, symbol, decimals, status)
@@ -214,12 +307,61 @@ func newDepositFixture(t *testing.T) (*Store, *pgxpool.Pool, depositFixture) {
 		t.Fatalf("创建测试商户: %v", err)
 	}
 	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO ledger_accounts (id, owner_type, owner_id, asset_id, code, normal_side, status)
+		VALUES
+			($1, 'platform', 'gateway', $3, 'custody', 'D', 'active'),
+			($2, 'merchant', $4, $3, 'available', 'C', 'active')
+	`, fixture.custodyAccountID, fixture.availableAccountID, fixture.assetID, fixture.merchantID); err != nil {
+		t.Fatalf("创建充值账本科目: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
 		INSERT INTO chain_scan_cursors (network, start_height, anchor_hash, next_height, previous_hash, tracked_contract)
 		VALUES ($1, 1, 'genesis', 1, 'genesis', $2)
 	`, fixture.network, fixture.contract); err != nil {
 		t.Fatalf("创建测试扫描游标: %v", err)
 	}
 	return store, pool, fixture
+}
+
+func assertDepositPosting(t *testing.T, pool *pgxpool.Pool, intentID, journalID, amount string) {
+	t.Helper()
+	ctx := context.Background()
+	var entryCount int
+	var debitAmount, creditAmount string
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*),
+		       COALESCE(SUM(amount) FILTER (WHERE side = 'D'), 0)::TEXT,
+		       COALESCE(SUM(amount) FILTER (WHERE side = 'C'), 0)::TEXT
+		FROM journal_entries
+		WHERE transaction_id = $1
+	`, journalID).Scan(&entryCount, &debitAmount, &creditAmount); err != nil ||
+		entryCount != 2 || debitAmount != amount || creditAmount != amount {
+		t.Fatalf("充值分录 count=%d debit=%s credit=%s error=%v", entryCount, debitAmount, creditAmount, err)
+	}
+	var linkedJournalID, creditedAmount string
+	if err := pool.QueryRow(ctx, `
+		SELECT ledger_transaction_id::TEXT, credited_amount::TEXT
+		FROM deposit_intents WHERE id = $1
+	`, intentID).Scan(&linkedJournalID, &creditedAmount); err != nil ||
+		linkedJournalID != journalID || creditedAmount != amount {
+		t.Fatalf("充值入账关联 journal=%s amount=%s error=%v", linkedJournalID, creditedAmount, err)
+	}
+	var outboxCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM outbox_events
+		WHERE topic = 'deposit.confirmed' AND aggregate_type = 'deposit' AND aggregate_id = $1
+	`, intentID).Scan(&outboxCount); err != nil || outboxCount != 1 {
+		t.Fatalf("充值 Outbox 数量 = %d, %v", outboxCount, err)
+	}
+	var payloadAmount, payloadJournalID string
+	if err := pool.QueryRow(ctx, `
+		SELECT payload->>'amount', payload->>'ledger_transaction_id'
+		FROM outbox_events
+		WHERE topic = 'deposit.confirmed' AND aggregate_type = 'deposit' AND aggregate_id = $1
+	`, intentID).Scan(&payloadAmount, &payloadJournalID); err != nil ||
+		payloadAmount != amount || payloadJournalID != journalID {
+		t.Fatalf("充值 Outbox payload amount=%s journal=%s error=%v", payloadAmount, payloadJournalID, err)
+	}
 }
 
 func insertChainEvent(t *testing.T, pool *pgxpool.Pool, fixture depositFixture, transactionID string, logIndex, height int64, blockTime time.Time, amount string) {
