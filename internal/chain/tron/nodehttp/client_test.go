@@ -64,6 +64,49 @@ func TestClientReadsFinalizedBlockAndTransfer(t *testing.T) {
 	}
 }
 
+func TestClientReadsSolidifiedTransactionOutcome(t *testing.T) {
+	server := newNodeServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/walletsolidity/gettransactionbyid":
+			writeJSON(writer, fmt.Sprintf(`{"txID":%q,"ret":[{"contractRet":"SUCCESS"}]}`, txID))
+		case "/walletsolidity/gettransactioninfobyid":
+			writeJSON(writer, fmt.Sprintf(`{"id":%q,"blockNumber":12,"receipt":{"result":"SUCCESS"}}`, txID))
+		default:
+			http.NotFound(writer, request)
+		}
+	})
+	state, err := newClient(t, server.URL, "", 0).Transaction(context.Background(), txID)
+	if err != nil || state.Status != tron.TransactionSucceeded || !state.Solidified || state.Block.Height != 12 {
+		t.Fatalf("Transaction() = %+v, %v", state, err)
+	}
+}
+
+func TestClientReturnsNotFoundForMissingSolidifiedTransaction(t *testing.T) {
+	server := newNodeServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/walletsolidity/gettransactionbyid" {
+			t.Fatalf("不应查询回执: %s", request.URL.Path)
+		}
+		writeJSON(writer, `{}`)
+	})
+	state, err := newClient(t, server.URL, "", 0).Transaction(context.Background(), txID)
+	if err != nil || state.Status != tron.TransactionNotFound {
+		t.Fatalf("Transaction() = %+v, %v", state, err)
+	}
+}
+
+func TestClientRejectsInconsistentMissingTransaction(t *testing.T) {
+	server := newNodeServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/walletsolidity/gettransactionbyid" {
+			t.Fatalf("不应查询回执: %s", request.URL.Path)
+		}
+		writeJSON(writer, `{"ret":[{"contractRet":"SUCCESS"}]}`)
+	})
+	_, err := newClient(t, server.URL, "", 0).Transaction(context.Background(), txID)
+	if !errors.Is(err, nodehttp.ErrInvalidResponse) {
+		t.Fatalf("Transaction() error = %v", err)
+	}
+}
+
 func TestClientSkipsFailedAndZeroValueTransfers(t *testing.T) {
 	tests := []struct {
 		name          string

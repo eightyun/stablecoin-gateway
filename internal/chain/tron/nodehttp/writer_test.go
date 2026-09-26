@@ -84,5 +84,5 @@ func TestWriterRejectsInvalidSignedTransaction(t *testing.T) {
 }
 
 func signedPayload(transactionID string) []byte {
-	return []byte(`{"txID":"` + transactionID + `","raw_data":{"contract":[]},"raw_data_hex":"00","signature":["` + strings.Repeat("a", 130) + `"]}`)
+	return []byte(`{"txID":"` + transactionID + `","raw_data":{"contract":[{}],"timestamp":1700000000000,"expiration":1700000060000},"raw_data_hex":"00","signature":["` + strings.Repeat("a", 130) + `"]}`)
 }

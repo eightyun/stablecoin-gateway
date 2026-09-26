@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateSignedTransaction(t *testing.T) {
@@ -14,11 +15,12 @@ func TestValidateSignedTransaction(t *testing.T) {
 	transactionID := hex.EncodeToString(digest[:])
 	transaction := SignedTransaction{
 		ID: transactionID,
-		Payload: []byte(`{"txID":"` + transactionID + `","raw_data":{"contract":[]},"raw_data_hex":"` +
+		Payload: []byte(`{"txID":"` + transactionID + `","raw_data":{"contract":[{}],"timestamp":1700000000000,"expiration":1700000060000},"raw_data_hex":"` +
 			hex.EncodeToString(rawData) + `","signature":["` + strings.Repeat("a", 130) + `"]}`),
 	}
-	if err := ValidateSignedTransaction(transaction); err != nil {
-		t.Fatalf("ValidateSignedTransaction() error = %v", err)
+	metadata, err := ParseSignedTransactionMetadata(transaction)
+	if err != nil || metadata.ExpiresAt.Sub(metadata.CreatedAt) != time.Minute {
+		t.Fatalf("ParseSignedTransactionMetadata() = %+v, %v", metadata, err)
 	}
 	transaction.ID = strings.Repeat("b", 64)
 	if err := ValidateSignedTransaction(transaction); !errors.Is(err, ErrInvalidSignedTransaction) {

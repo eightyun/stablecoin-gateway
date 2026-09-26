@@ -108,6 +108,12 @@ type FinalizedReader interface {
 	SolidifiedBlockByHeight(ctx context.Context, height uint64) (Block, error)
 }
 
+// FinalizedTransactionReader 提供出款终态确认所需的固化链头和交易查询。
+type FinalizedTransactionReader interface {
+	SolidifiedHead(ctx context.Context) (Header, error)
+	Transaction(ctx context.Context, transactionID string) (TransactionState, error)
+}
+
 // Broadcaster 只负责将已签名交易交给节点。nil 错误只表示节点已接收，不代表执行成功。
 // 错误可能发生在节点接收前或接收后；调用方必须按原交易 ID 查询，而不能直接重建付款。
 type Broadcaster interface {

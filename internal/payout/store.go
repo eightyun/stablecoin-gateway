@@ -60,6 +60,7 @@ type Details struct {
 	DestinationAddress  string    `json:"destination_address"`
 	Amount              string    `json:"amount"`
 	Status              string    `json:"status"`
+	TransactionID       string    `json:"transaction_id,omitempty"`
 	FreezeTransactionID string    `json:"freeze_transaction_id"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
@@ -245,6 +246,7 @@ func queryDetails(ctx context.Context, querier rowQuerier, merchantID, payoutID 
 		SELECT payout.id::TEXT, payout.merchant_reference, payout.asset_id,
 		       asset.network, asset.contract_address, asset.symbol, asset.decimals,
 		       payout.destination_address, payout.amount::TEXT, payout.status,
+		       COALESCE(payout.transaction_id, ''),
 		       payout.freeze_transaction_id::TEXT, payout.created_at, payout.updated_at
 		FROM payouts AS payout
 		JOIN assets AS asset ON asset.id = payout.asset_id
@@ -252,7 +254,7 @@ func queryDetails(ctx context.Context, querier rowQuerier, merchantID, payoutID 
 	`, merchantID, payoutID).Scan(
 		&details.ID, &details.MerchantReference, &details.AssetID,
 		&details.Network, &details.ContractAddress, &details.Symbol, &details.Decimals,
-		&details.DestinationAddress, &details.Amount, &details.Status,
+		&details.DestinationAddress, &details.Amount, &details.Status, &details.TransactionID,
 		&details.FreezeTransactionID, &details.CreatedAt, &details.UpdatedAt,
 	)
 	return details, err

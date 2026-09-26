@@ -32,7 +32,7 @@ func TestClientSignsTransferOverHTTPS(t *testing.T) {
 			t.Fatalf("请求体 = %+v, %v", body, err)
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"transaction_id":"` + testTxID + `","signed_transaction":{"txID":"` + testTxID + `","raw_data":{"contract":[]},"raw_data_hex":"00","signature":["` + strings.Repeat("a", 130) + `"]}}`))
+		_, _ = writer.Write([]byte(`{"transaction_id":"` + testTxID + `","signed_transaction":{"txID":"` + testTxID + `","raw_data":{"contract":[{}],"timestamp":1700000000000,"expiration":1700000060000},"raw_data_hex":"00","signature":["` + strings.Repeat("a", 130) + `"]}}`))
 	}))
 	defer server.Close()
 	client, err := New(Config{BaseURL: server.URL + "/signer", BearerToken: "secret"}, server.Client())
@@ -65,7 +65,7 @@ func TestClientRejectsInvalidConfigurationAndRequest(t *testing.T) {
 
 func TestClientRejectsMismatchedTransactionID(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		_, _ = writer.Write([]byte(`{"transaction_id":"` + testTxID + `","signed_transaction":{"txID":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","raw_data":{"contract":[]},"raw_data_hex":"00","signature":["` + strings.Repeat("a", 130) + `"]}}`))
+		_, _ = writer.Write([]byte(`{"transaction_id":"` + testTxID + `","signed_transaction":{"txID":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","raw_data":{"contract":[{}],"timestamp":1700000000000,"expiration":1700000060000},"raw_data_hex":"00","signature":["` + strings.Repeat("a", 130) + `"]}}`))
 	}))
 	defer server.Close()
 	client, err := New(Config{BaseURL: server.URL, BearerToken: "secret"}, server.Client())

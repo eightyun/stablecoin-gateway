@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -261,7 +262,7 @@ func TestStoreSigningLeaseTakeoverAndCompletion(t *testing.T) {
 	transaction := tron.SignedTransaction{
 		ID: hex.EncodeToString(transactionHash[:]),
 		Payload: []byte(`{"txID":"` + hex.EncodeToString(transactionHash[:]) +
-			`","raw_data":{"contract":[]},"raw_data_hex":"` + hex.EncodeToString(rawTransaction) +
+			`","raw_data":{"contract":[{}],"timestamp":1700000000000,"expiration":1700000060000},"raw_data_hex":"` + hex.EncodeToString(rawTransaction) +
 			`","signature":["` + strings.Repeat("a", 130) + `"]}`),
 	}
 	if err := fixture.store.CompleteSigning(context.Background(), first, transaction); !errors.Is(err, ErrSigningLeaseLost) {
@@ -310,6 +311,125 @@ func TestStoreSigningLeaseTakeoverAndCompletion(t *testing.T) {
 	}
 }
 
+func TestStoreBroadcastConfirmationSettlesAndReleasesFunds(t *testing.T) {
+	fixture := newPayoutFixture(t, 100)
+	drainApprovedPayouts(t, fixture.store)
+	drainExecutingPayouts(t, fixture.store)
+
+	successPayout := prepareSignedPayout(t, fixture, "execute-success", "execute-success-order", "60")
+	broadcast, err := fixture.store.ClaimBroadcast(context.Background(), "executor-1", time.Minute)
+	if err != nil || broadcast.PayoutID != successPayout {
+		t.Fatalf("ClaimBroadcast() = %+v, %v", broadcast, err)
+	}
+	if err := fixture.store.BeginConfirmation(context.Background(), broadcast, "accepted", ""); err != nil {
+		t.Fatalf("BeginConfirmation() error = %v", err)
+	}
+	confirmation, err := fixture.store.ClaimConfirmation(context.Background(), "executor-1", time.Minute)
+	if err != nil || confirmation.PayoutID != successPayout {
+		t.Fatalf("ClaimConfirmation() = %+v, %v", confirmation, err)
+	}
+	if err := fixture.store.CompleteConfirmationSuccess(context.Background(), confirmation); err != nil {
+		t.Fatalf("CompleteConfirmationSuccess() error = %v", err)
+	}
+	available, frozen := fixture.balances(t)
+	if available != "40" || frozen != "0" {
+		t.Fatalf("成功结算余额 available=%s frozen=%s", available, frozen)
+	}
+	details, err := fixture.store.Get(context.Background(), fixture.merchantID, successPayout)
+	if err != nil || details.Status != StatusSucceeded || details.TransactionID == "" {
+		t.Fatalf("成功出款详情 = %+v, %v", details, err)
+	}
+
+	failedPayout := prepareSignedPayout(t, fixture, "execute-failed", "execute-failed-order", "20")
+	broadcast, err = fixture.store.ClaimBroadcast(context.Background(), "executor-2", time.Minute)
+	if err != nil || broadcast.PayoutID != failedPayout {
+		t.Fatalf("失败单 ClaimBroadcast() = %+v, %v", broadcast, err)
+	}
+	if err := fixture.store.BeginConfirmation(context.Background(), broadcast, "unknown", "broadcast_error"); err != nil {
+		t.Fatalf("失败单 BeginConfirmation() error = %v", err)
+	}
+	confirmation, err = fixture.store.ClaimConfirmation(context.Background(), "executor-2", time.Minute)
+	if err != nil || confirmation.PayoutID != failedPayout {
+		t.Fatalf("失败单 ClaimConfirmation() = %+v, %v", confirmation, err)
+	}
+	if err := fixture.store.CompleteConfirmationFailure(context.Background(), confirmation, "execution_failed"); err != nil {
+		t.Fatalf("CompleteConfirmationFailure() error = %v", err)
+	}
+	available, frozen = fixture.balances(t)
+	if available != "40" || frozen != "0" {
+		t.Fatalf("失败解冻余额 available=%s frozen=%s", available, frozen)
+	}
+	details, err = fixture.store.Get(context.Background(), fixture.merchantID, failedPayout)
+	if err != nil || details.Status != StatusFailed {
+		t.Fatalf("失败出款详情 = %+v, %v", details, err)
+	}
+}
+
+func prepareSignedPayout(t *testing.T, fixture payoutFixture, idempotencyKey, reference, amount string) string {
+	t.Helper()
+	created, err := fixture.store.Create(context.Background(), fixture.request(t, idempotencyKey, reference, amount))
+	if err != nil {
+		t.Fatalf("创建待执行出款: %v", err)
+	}
+	if _, err := fixture.store.Review(context.Background(), ReviewRequest{
+		PayoutID: created.Payout.ID, Decision: DecisionApprove,
+		Reviewer: "risk@example.com", Reason: "approved for execution",
+	}); err != nil {
+		t.Fatalf("审批待执行出款: %v", err)
+	}
+	claim, err := fixture.store.ClaimSigning(context.Background(), "signer-execution-test", time.Minute)
+	if err != nil || claim.PayoutID != created.Payout.ID {
+		t.Fatalf("领取待执行签名 = %+v, %v", claim, err)
+	}
+	if err := fixture.store.CompleteSigning(context.Background(), claim, testSignedTransaction(created.Payout.ID)); err != nil {
+		t.Fatalf("完成待执行签名: %v", err)
+	}
+	return created.Payout.ID
+}
+
+func testSignedTransaction(seed string) tron.SignedTransaction {
+	rawTransaction := []byte(seed)
+	digest := sha256.Sum256(rawTransaction)
+	transactionID := hex.EncodeToString(digest[:])
+	now := time.Now().UTC()
+	return tron.SignedTransaction{
+		ID: transactionID,
+		Payload: []byte(fmt.Sprintf(
+			`{"txID":%q,"raw_data":{"contract":[{}],"timestamp":%d,"expiration":%d},"raw_data_hex":%q,"signature":[%q]}`,
+			transactionID, now.UnixMilli(), now.Add(time.Minute).UnixMilli(),
+			hex.EncodeToString(rawTransaction), strings.Repeat("a", 130),
+		)),
+	}
+}
+
+func drainExecutingPayouts(t *testing.T, store *Store) {
+	t.Helper()
+	for {
+		claim, err := store.ClaimBroadcast(context.Background(), "execution-drain", time.Minute)
+		if errors.Is(err, ErrNoBroadcastJob) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("清理广播队列: %v", err)
+		}
+		if err := store.BeginConfirmation(context.Background(), claim, "unknown", "test_cleanup"); err != nil {
+			t.Fatalf("清理广播状态: %v", err)
+		}
+	}
+	for {
+		claim, err := store.ClaimConfirmation(context.Background(), "execution-drain", time.Minute)
+		if errors.Is(err, ErrNoConfirmationJob) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("清理确认队列: %v", err)
+		}
+		if err := store.CompleteConfirmationFailure(context.Background(), claim, "test_cleanup"); err != nil {
+			t.Fatalf("清理确认状态: %v", err)
+		}
+	}
+}
+
 func drainApprovedPayouts(t *testing.T, store *Store) {
 	t.Helper()
 	for {
@@ -325,7 +445,7 @@ func drainApprovedPayouts(t *testing.T, store *Store) {
 		if err := store.CompleteSigning(context.Background(), claim, tron.SignedTransaction{
 			ID: hex.EncodeToString(sum[:]),
 			Payload: []byte(`{"txID":"` + hex.EncodeToString(sum[:]) +
-				`","raw_data":{"contract":[]},"raw_data_hex":"` + hex.EncodeToString(rawTransaction) +
+				`","raw_data":{"contract":[{}],"timestamp":1700000000000,"expiration":1700000060000},"raw_data_hex":"` + hex.EncodeToString(rawTransaction) +
 				`","signature":["` + strings.Repeat("a", 130) + `"]}`),
 		}); err != nil {
 			t.Fatalf("完成清理签名: %v", err)

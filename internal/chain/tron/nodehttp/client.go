@@ -49,6 +49,7 @@ type Client struct {
 }
 
 var _ tron.FinalizedReader = (*Client)(nil)
+var _ tron.FinalizedTransactionReader = (*Client)(nil)
 
 // New 创建 SolidityNode HTTP 客户端。nil HTTP 客户端使用带超时的标准客户端。
 func New(config Config, httpClient *http.Client) (*Client, error) {
@@ -153,6 +154,56 @@ func (client *Client) SolidifiedBlockByHeight(ctx context.Context, height uint64
 		block.Transfers = append(block.Transfers, transfers...)
 	}
 	return block, nil
+}
+
+// Transaction 查询 SolidityNode 中已固化的交易体和智能合约执行回执。
+func (client *Client) Transaction(ctx context.Context, transactionID string) (tron.TransactionState, error) {
+	transactionID, err := normalizedHash(transactionID)
+	if err != nil {
+		return tron.TransactionState{}, err
+	}
+	request := struct {
+		Value string `json:"value"`
+	}{Value: transactionID}
+	var transaction wireTransaction
+	if err := client.post(ctx, "/walletsolidity/gettransactionbyid", request, &transaction); err != nil {
+		return tron.TransactionState{}, err
+	}
+	if transaction.ID == "" {
+		if len(transaction.Results) != 0 {
+			return tron.TransactionState{}, ErrInvalidResponse
+		}
+		return tron.TransactionState{Status: tron.TransactionNotFound}, nil
+	}
+	transactions, err := parseTransactions([]wireTransaction{transaction})
+	if err != nil || transactions[0].id != transactionID {
+		return tron.TransactionState{}, ErrInvalidResponse
+	}
+	var info wireTransactionInfo
+	if err := client.post(ctx, "/walletsolidity/gettransactioninfobyid", request, &info); err != nil {
+		return tron.TransactionState{}, err
+	}
+	if info.ID == "" {
+		if info.BlockNumber != 0 || info.Result != "" || info.Receipt.Result != "" || len(info.Logs) != 0 {
+			return tron.TransactionState{}, ErrInvalidResponse
+		}
+		return tron.TransactionState{Status: tron.TransactionPending, Solidified: true}, nil
+	}
+	infoID, err := normalizedHash(info.ID)
+	if err != nil || infoID != transactionID || info.BlockNumber < 0 {
+		return tron.TransactionState{}, ErrInvalidResponse
+	}
+	outcome, err := executionOutcome(transactions[0].success, info)
+	if err != nil {
+		return tron.TransactionState{}, err
+	}
+	status := tron.TransactionFailed
+	if outcome == tron.ExecutionSucceeded {
+		status = tron.TransactionSucceeded
+	}
+	return tron.TransactionState{
+		Status: status, Block: tron.Header{Height: uint64(info.BlockNumber)}, Solidified: true,
+	}, nil
 }
 
 type wireBlock struct {

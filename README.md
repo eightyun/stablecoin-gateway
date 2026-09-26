@@ -34,9 +34,12 @@ Gateway 是一个面向商户的生产级开源稳定币支付系统，目标覆
 - 带审计记录的出款审批，以及拒绝时的原子余额解冻
 - 带租约和栅栏令牌的出款签名队列，以及隔离签名器接口
 - HTTPS 远程签名器客户端与 TRON FullNode 广播适配器
+- 带租约的出款广播与确认 Worker，广播结果不确定时按原 txID 恢复
+- 基于 SolidityNode 固化交易与 Receipt 的终态确认
+- 成功出款原子结算、失败或安全过期出款原子解冻
 - 可用余额与冻结余额分离查询
 
-尚未完成：出款广播/确认 Worker、自动地址筛查、归集、对账和生产钱包签名服务本身。
+尚未完成：自动地址筛查、归集、对账、监控告警和生产钱包签名服务本身。
 
 ## 本地运行
 
@@ -137,7 +140,7 @@ UPPERCASE_METHOD\nREQUEST_URI\nTIMESTAMP\nNONCE\nSHA256_HEX(BODY)
 
 其中 `REQUEST_URI` 包含查询字符串。服务端默认接受前后 5 分钟时间窗，并在签名验证成功后原子消费 nonce。
 
-当前出款创建后进入 `pending_review`，资金从 `available` 转入 `frozen`；审批通过后进入 `approved`。签名 Worker 通过数据库租约领取任务，并只调用不暴露私钥的 `TransferSigner`；成功持久化唯一签名交易后才进入 `ready_for_broadcast`。广播执行 Worker 尚未完成，因此目前不会自动产生链上交易。第一条出款网络只接受 TRON Base58Check 地址。
+当前出款创建后进入 `pending_review`，资金从 `available` 转入 `frozen`；审批通过后进入 `approved`。签名 Worker 通过数据库租约领取任务，并只调用不暴露私钥的 `TransferSigner`；成功持久化唯一签名交易后才进入 `ready_for_broadcast`。执行 Worker 广播同一份不可变签名交易，并只以 SolidityNode 的固化交易与 Receipt 作为资金终态；广播超时会继续查询原 txID，不会直接创建第二笔付款。第一条出款网络只接受 TRON Base58Check 地址。
 
 配置并启动出款签名 Worker：
 
@@ -147,7 +150,19 @@ export GATEWAY_PAYOUT_SIGNER_BEARER_TOKEN='从密钥管理服务注入'
 go run ./cmd/gateway-payout-signing-worker
 ```
 
-远程签名服务必须实现 `POST /v1/tron/transfers:sign`，按 `Idempotency-Key` 幂等返回同一笔完整签名交易。生产环境应通过 mTLS 服务网格或等价工作负载身份保护该 HTTPS 链路；Bearer Token 仍必须从密钥管理服务注入，不能写入仓库。当前 FullNode 广播适配器尚未接入执行 Worker，因此不会自动广播。
+远程签名服务必须实现 `POST /v1/tron/transfers:sign`，按 `Idempotency-Key` 幂等返回同一笔完整签名交易。生产环境应通过 mTLS 服务网格或等价工作负载身份保护该 HTTPS 链路；Bearer Token 仍必须从密钥管理服务注入，不能写入仓库。
+
+配置 FullNode、SolidityNode 并启动出款执行 Worker：
+
+```bash
+export GATEWAY_TRON_NETWORK='tron-nile'
+export GATEWAY_PAYOUT_TRON_FULL_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_PAYOUT_TRON_SOLIDITY_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_TRON_API_KEY='从密钥管理服务注入'
+go run ./cmd/gateway-payout-execution-worker
+```
+
+上述配置仅表示具备测试网接入能力；仓库当前尚未完成 Nile 真实钱包和测试资产的端到端验证。生产环境应为两个节点端点配置独立容灾与监控。
 
 ## Webhook
 
@@ -167,7 +182,7 @@ v1=HEX(HMAC_SHA256(secret, timestamp + "." + event_id + "." + raw_body))
 
 ## 网络测试门槛
 
-- 测试网：完成出款审批/筛查、隔离签名器接口、TRON 广播与确认 Worker 后开始，目标约为第一版完成度 75%～80%。
+- 测试网：出款审批、隔离签名、广播和固化确认链路已具备接入条件；下一阶段使用 Nile 钱包和测试资产做端到端验证，但地址筛查仍需先以人工审批作为安全闸门。
 - 主网灰度：测试网持续运行、三角对账、监控告警、灾难恢复演练和外部安全审计全部通过后，才允许白名单与小额限额灰度。
 - 主网不作为普通测试环境；任何主网验证都必须有明确损失上限、双人审批和停止开关。
 

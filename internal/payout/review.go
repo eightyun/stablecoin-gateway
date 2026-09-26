@@ -19,6 +19,9 @@ const (
 	StatusPendingReview     = "pending_review"
 	StatusApproved          = "approved"
 	StatusReadyForBroadcast = "ready_for_broadcast"
+	StatusConfirming        = "confirming"
+	StatusSucceeded         = "succeeded"
+	StatusFailed            = "failed"
 	StatusRejected          = "rejected"
 )
 

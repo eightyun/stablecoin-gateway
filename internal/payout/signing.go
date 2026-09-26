@@ -93,8 +93,9 @@ func (store *Store) CompleteSigning(
 	if err := validateSigningClaim(claim); err != nil {
 		return err
 	}
+	metadata, metadataErr := tron.ParseSignedTransactionMetadata(transaction)
 	if !transactionIDPattern.MatchString(transaction.ID) || len(transaction.Payload) == 0 ||
-		len(transaction.Payload) > maxSignedTransactionBytes || tron.ValidateSignedTransaction(transaction) != nil {
+		len(transaction.Payload) > maxSignedTransactionBytes || metadataErr != nil {
 		return ErrInvalidSignedTransaction
 	}
 	result, err := store.db.Exec(ctx, `
@@ -102,6 +103,7 @@ func (store *Store) CompleteSigning(
 		SET status = 'ready_for_broadcast',
 		    transaction_id = $4,
 		    signed_transaction = $5,
+		    transaction_expires_at = $6,
 		    execution_lease_owner = NULL,
 		    execution_lease_until = NULL,
 		    last_execution_error = NULL,
@@ -111,7 +113,7 @@ func (store *Store) CompleteSigning(
 		  AND execution_lease_owner = $2
 		  AND execution_lease_epoch = $3
 		  AND execution_lease_until > clock_timestamp()
-	`, claim.PayoutID, claim.WorkerID, claim.LeaseEpoch, transaction.ID, transaction.Payload)
+	`, claim.PayoutID, claim.WorkerID, claim.LeaseEpoch, transaction.ID, transaction.Payload, metadata.ExpiresAt)
 	if err != nil {
 		var databaseError *pgconn.PgError
 		if errors.As(err, &databaseError) && databaseError.ConstraintName == "payouts_transaction_id_unique_idx" {

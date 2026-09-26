@@ -34,9 +34,12 @@ Implemented components:
 - Audited payout review with atomic unfreezing on rejection
 - Leased payout-signing queue with fencing tokens and an isolated signer interface
 - HTTPS remote-signer client and TRON FullNode broadcast adapter
+- Leased payout broadcast and confirmation worker with recovery by the original txID
+- Final payout confirmation from SolidityNode transactions and receipts
+- Atomic settlement on success and atomic fund release on safe failure or expiry
 - Separate available and frozen balance reporting
 
-Not yet implemented: payout broadcast/confirmation workers, automated address screening, wallet sweeping, reconciliation, and the production signer service itself.
+Not yet implemented: automated address screening, wallet sweeping, reconciliation, monitoring and alerting, and the production signer service itself.
 
 ## Local Development
 
@@ -137,7 +140,7 @@ UPPERCASE_METHOD\nREQUEST_URI\nTIMESTAMP\nNONCE\nSHA256_HEX(BODY)
 
 `REQUEST_URI` includes the query string. The server accepts a five-minute clock skew by default and atomically consumes the nonce after signature verification.
 
-New payouts enter `pending_review` and move funds from `available` to `frozen`; approval moves them to `approved`. A signing worker claims jobs through database leases and calls only the private-key-free `TransferSigner` boundary. A payout reaches `ready_for_broadcast` only after one immutable signed transaction has been persisted. The initial payout rail accepts TRON Base58Check addresses only.
+New payouts enter `pending_review` and move funds from `available` to `frozen`; approval moves them to `approved`. A signing worker claims jobs through database leases and calls only the private-key-free `TransferSigner` boundary. A payout reaches `ready_for_broadcast` only after one immutable signed transaction has been persisted. The execution worker broadcasts that exact transaction and accepts only a finalized SolidityNode transaction and receipt as the financial terminal state. A broadcast timeout continues tracking the original txID instead of creating a second payment. The initial payout rail accepts TRON Base58Check addresses only.
 
 Configure and start the payout-signing worker:
 
@@ -147,7 +150,19 @@ export GATEWAY_PAYOUT_SIGNER_BEARER_TOKEN='injected-by-your-secrets-manager'
 go run ./cmd/gateway-payout-signing-worker
 ```
 
-The remote service must implement `POST /v1/tron/transfers:sign` and return the same complete signed transaction for repeated `Idempotency-Key` values. Production deployments should protect this HTTPS path with a mutual-TLS service mesh or equivalent workload identity. The bearer token must still be injected from a secrets manager. The FullNode broadcast adapter is not yet wired to an execution worker, so transactions are not broadcast automatically.
+The remote service must implement `POST /v1/tron/transfers:sign` and return the same complete signed transaction for repeated `Idempotency-Key` values. Production deployments should protect this HTTPS path with a mutual-TLS service mesh or equivalent workload identity. The bearer token must still be injected from a secrets manager.
+
+Configure the FullNode and SolidityNode endpoints, then start the payout execution worker:
+
+```bash
+export GATEWAY_TRON_NETWORK='tron-nile'
+export GATEWAY_PAYOUT_TRON_FULL_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_PAYOUT_TRON_SOLIDITY_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_TRON_API_KEY='injected-by-your-secrets-manager'
+go run ./cmd/gateway-payout-execution-worker
+```
+
+This configuration only makes the testnet integration available. The repository has not yet completed an end-to-end Nile test with a real test wallet and test assets. Production deployments should provide independent failover and monitoring for both node endpoints.
 
 ## Webhooks
 
@@ -167,7 +182,7 @@ Only 2xx responses are successful. Delivery is at least once, so merchants must 
 
 ## Network Testing Gates
 
-- Testnet starts after payout approval/screening, an isolated signer interface, and TRON broadcast and confirmation workers are implemented, at roughly 75%–80% first-release completion.
+- The payout review, isolated signing, broadcast, and finalized-confirmation path is ready for testnet integration. The next phase validates it end to end with a Nile wallet and test assets; manual review remains the safety gate until automated address screening exists.
 - Mainnet canarying starts only after sustained testnet operation, three-way reconciliation, monitoring and alerting, disaster-recovery exercises, and an external security audit pass.
 - Mainnet is never a general test environment. Every mainnet canary requires a defined loss limit, dual approval, and an emergency stop.
 
