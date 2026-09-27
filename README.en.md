@@ -40,7 +40,7 @@ Implemented components:
 - Atomic settlement on success and atomic fund release on safe failure or expiry
 - Read-only TRON testnet preflight and a mainnet broadcast safety switch that is off by default
 - Isolated Nile/Shasta testnet signer with contract/amount policy and durable replay protection
-- Live Nile USDT validation covering signing, broadcast, finalized scanning, deposit matching, and double-entry posting
+- Live Nile USDT validation covering deposit posting plus merchant-API-driven payout, signing, broadcast, finalized settlement, and safe expiry recovery
 - Separate available and frozen balance reporting
 
 Not yet implemented: automated address screening, wallet sweeping, reconciliation, monitoring and alerting, and a production KMS/HSM/MPC signing backend.
@@ -155,10 +155,11 @@ export GATEWAY_PAYOUT_SIGNER_URL='https://signer.internal.example'
 export GATEWAY_PAYOUT_SIGNER_BEARER_TOKEN='injected-by-your-secrets-manager'
 export GATEWAY_PAYOUT_SIGNER_ADDRESS='dedicated-hot-wallet-address'
 export GATEWAY_PAYOUT_SIGNER_MAX_FEE_LIMIT='100000000'
+export GATEWAY_PAYOUT_SIGNER_CA_FILE='/run/secrets/signer-ca.pem'
 go run ./cmd/gateway-payout-signing-worker
 ```
 
-The remote service must implement `POST /v1/tron/transfers:sign` and return the same complete signed transaction for repeated `Idempotency-Key` values. The worker parses the result again and binds it to the expected owner, TRC20 contract, destination, amount, `fee_limit`, and lifetime instead of trusting only the returned txID. Production deployments should protect this HTTPS path with a mutual-TLS service mesh or equivalent workload identity. The bearer token must still be injected from a secrets manager.
+The remote service must implement `POST /v1/tron/transfers:sign` and return the same complete signed transaction for repeated `Idempotency-Key` values. The worker parses the result again and binds it to the expected owner, TRC20 contract, destination, amount, `fee_limit`, and lifetime instead of trusting only the returned txID. Private PKI roots can be appended with `GATEWAY_PAYOUT_SIGNER_CA_FILE`; direct mTLS additionally accepts a paired `GATEWAY_PAYOUT_SIGNER_CLIENT_CERT_FILE` and `GATEWAY_PAYOUT_SIGNER_CLIENT_KEY_FILE`. There is no option to skip certificate verification. Production deployments may also protect this HTTPS path with a mutual-TLS service mesh or equivalent workload identity. The bearer token must still be injected from a secrets manager.
 
 The included `gateway-testnet-signer` accepts only Nile or Shasta. It uses a local file key and explicitly rejects mainnet, so it is intended for testnet end-to-end acceptance rather than production key custody. Prepare a dedicated test wallet, store its 64-character hexadecimal private key in a `0600` file, and create a `0700` idempotency directory. Never commit the wallet key, bearer token, or TLS private key:
 
@@ -192,7 +193,7 @@ export GATEWAY_TRON_API_KEY='injected-by-your-secrets-manager'
 go run ./cmd/gateway-payout-execution-worker
 ```
 
-This configuration provides the testnet signing, broadcast, and confirmation path. On 2026-09-27, a fresh Nile-only wallet completed two live test-asset checks: the first covered signer construction, signing, broadcast, and SolidityNode finalization; the second covered Indexer ingestion of a real Transfer, Deposit Worker intent matching, double-entry posting, and creation of the `deposit.confirmed` Outbox event. The transactions are [`e7f6ee9…aef39`](https://nile.tronscan.org/#/transaction/e7f6ee9ba5f10f119454d8df0a33b633ca6915a31f2847b82a1d5d25859aef39) and [`fa242e1b…cc82b`](https://nile.tronscan.org/#/transaction/fa242e1bdc988f926582b169944ddf6eeb64cac55c7e83e79d38e371385cc82b). This is functional testnet evidence rather than production acceptance; production deployments still need independent node failover and monitoring.
+This configuration provides the testnet signing, broadcast, and confirmation path. On 2026-09-27, a fresh Nile-only wallet completed live test-asset checks: [`e7f6ee9…aef39`](https://nile.tronscan.org/#/transaction/e7f6ee9ba5f10f119454d8df0a33b633ca6915a31f2847b82a1d5d25859aef39) covered signer construction, signing, broadcast, and SolidityNode finalization; [`fa242e1b…cc82b`](https://nile.tronscan.org/#/transaction/fa242e1bdc988f926582b169944ddf6eeb64cac55c7e83e79d38e371385cc82b) covered Indexer ingestion of a real Transfer, Deposit Worker intent matching, double-entry posting, and creation of the `deposit.confirmed` Outbox event; and [`86283b5f…e9ac`](https://nile.tronscan.org/#/transaction/86283b5fb90fc9aaf01162aff936df9c2c2b5ad7a89856ee972d691e87f0e9ac) covered merchant API payout creation, atomic freezing, manual approval, a private-CA signer, broadcast, finalization, and ledger settlement. The same run also verified automatic failure and atomic fund release when a transaction safely expired without reaching the chain. This is functional testnet evidence rather than production acceptance; production deployments still need independent node failover and monitoring.
 
 Before configuring a wallet and remote signer, run the read-only Nile preflight, which holds no private key and writes nothing on-chain:
 
@@ -226,7 +227,7 @@ Only 2xx responses are successful. Delivery is at least once, so merchants must 
 
 ## Network Testing Gates
 
-- The minimum Nile loop now covers live signing, broadcast, finalized scanning, deposit matching, and ledger posting. The next phase completes the merchant-API-driven payout state machine, failure paths, and sustained testnet operation.
+- Nile now covers both live deposit posting and a merchant-API-driven successful payout loop, plus one safe-expiry recovery path. The next phase adds broader fault injection, sustained operation, reconciliation, and monitoring.
 - Mainnet canarying starts only after sustained testnet operation, three-way reconciliation, monitoring and alerting, disaster-recovery exercises, and an external security audit pass.
 - Mainnet is never a general test environment. Every mainnet canary requires a defined loss limit, dual approval, and an emergency stop.
 

@@ -15,23 +15,25 @@ const (
 	defaultPayoutExecutionRetryMin         = time.Second
 	defaultPayoutExecutionRetryMax         = 30 * time.Second
 	defaultPayoutNodeMaxResponseBytes      = 2 << 20
+	defaultPayoutBroadcastMaxResponseBytes = 64 << 10
 )
 
 // PayoutExecutionWorkerConfig 保存出款广播和固化确认配置。
 type PayoutExecutionWorkerConfig struct {
-	DatabaseURL          string
-	WorkerID             string
-	Network              string
-	FullNodeURL          string
-	SolidityNodeURL      string
-	NodeAPIKey           string
-	NodeMaxResponseBytes int64
-	OperationTimeout     time.Duration
-	LeaseDuration        time.Duration
-	ConfirmationInterval time.Duration
-	IdleInterval         time.Duration
-	RetryMin             time.Duration
-	RetryMax             time.Duration
+	DatabaseURL               string
+	WorkerID                  string
+	Network                   string
+	FullNodeURL               string
+	SolidityNodeURL           string
+	NodeAPIKey                string
+	NodeMaxResponseBytes      int64
+	BroadcastMaxResponseBytes int64
+	OperationTimeout          time.Duration
+	LeaseDuration             time.Duration
+	ConfirmationInterval      time.Duration
+	IdleInterval              time.Duration
+	RetryMin                  time.Duration
+	RetryMax                  time.Duration
 }
 
 // LoadPayoutExecutionWorker 加载出款执行 Worker 配置。
@@ -93,6 +95,15 @@ func LoadPayoutExecutionWorker() (PayoutExecutionWorkerConfig, error) {
 	} else if value > 0 {
 		maxResponseBytes = value
 	}
+	broadcastMaxResponseBytes, err := optionalBoundedInt64(
+		"GATEWAY_PAYOUT_BROADCAST_MAX_RESPONSE_BYTES",
+		defaultPayoutBroadcastMaxResponseBytes,
+		1024,
+		1<<20,
+	)
+	if err != nil {
+		return PayoutExecutionWorkerConfig{}, err
+	}
 	if leaseDuration <= operationTimeout+5*time.Second || retryMax < retryMin || maxResponseBytes > 16<<20 {
 		return PayoutExecutionWorkerConfig{}, fmt.Errorf("出款执行 Worker 配置关系无效")
 	}
@@ -107,8 +118,9 @@ func LoadPayoutExecutionWorker() (PayoutExecutionWorkerConfig, error) {
 		DatabaseURL: databaseURL, WorkerID: workerID, Network: network,
 		FullNodeURL: fullNodeURL, SolidityNodeURL: solidityNodeURL,
 		NodeAPIKey:           strings.TrimSpace(os.Getenv("GATEWAY_TRON_API_KEY")),
-		NodeMaxResponseBytes: maxResponseBytes, OperationTimeout: operationTimeout,
-		LeaseDuration: leaseDuration, ConfirmationInterval: confirmationInterval,
+		NodeMaxResponseBytes: maxResponseBytes, BroadcastMaxResponseBytes: broadcastMaxResponseBytes,
+		OperationTimeout: operationTimeout,
+		LeaseDuration:    leaseDuration, ConfirmationInterval: confirmationInterval,
 		IdleInterval: idleInterval, RetryMin: retryMin, RetryMax: retryMax,
 	}, nil
 }

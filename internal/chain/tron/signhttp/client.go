@@ -4,12 +4,15 @@ package signhttp
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -38,6 +41,9 @@ type Config struct {
 	MaxFeeLimit            int64
 	MaxTransactionLifetime time.Duration
 	MaxResponseBytes       int64
+	CAFile                 string
+	ClientCertificateFile  string
+	ClientKeyFile          string
 }
 
 // Client 只传递语义化转账请求，不持有私钥。
@@ -58,11 +64,17 @@ func New(config Config, httpClient *http.Client) (*Client, error) {
 	baseURL, err := url.Parse(strings.TrimSpace(config.BaseURL))
 	token := strings.TrimSpace(config.BearerToken)
 	ownerAddress := strings.TrimSpace(config.ExpectedOwnerAddress)
+	config.CAFile = strings.TrimSpace(config.CAFile)
+	config.ClientCertificateFile = strings.TrimSpace(config.ClientCertificateFile)
+	config.ClientKeyFile = strings.TrimSpace(config.ClientKeyFile)
+	clientIdentityConfigured := config.ClientCertificateFile != "" || config.ClientKeyFile != ""
 	_, ownerErr := tron.NormalizeAddressHex(ownerAddress)
 	if err != nil || baseURL.Scheme != "https" || baseURL.Host == "" || baseURL.User != nil ||
 		baseURL.RawQuery != "" || baseURL.Fragment != "" || token == "" || len(token) > 4096 ||
 		ownerErr != nil || config.MaxFeeLimit <= 0 || config.MaxTransactionLifetime <= minimumRemainingLifetime ||
-		config.MaxResponseBytes < 0 {
+		config.MaxResponseBytes < 0 ||
+		(clientIdentityConfigured && (config.ClientCertificateFile == "" || config.ClientKeyFile == "")) ||
+		(httpClient != nil && (config.CAFile != "" || clientIdentityConfigured)) {
 		return nil, ErrInvalidConfig
 	}
 	for _, character := range token {
@@ -79,8 +91,9 @@ func New(config Config, httpClient *http.Client) (*Client, error) {
 	}
 	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/v1/tron/transfers:sign"
 	if httpClient == nil {
-		httpClient = &http.Client{
-			Timeout: 15 * time.Second,
+		httpClient, err = secureHTTPClient(config)
+		if err != nil {
+			return nil, err
 		}
 	}
 	configuredHTTPClient := *httpClient
@@ -93,6 +106,38 @@ func New(config Config, httpClient *http.Client) (*Client, error) {
 		maxTransactionLifetime: config.MaxTransactionLifetime,
 		maxResponseBytes:       maxResponseBytes, httpClient: &configuredHTTPClient,
 	}, nil
+}
+
+func secureHTTPClient(config Config) (*http.Client, error) {
+	rootCAs, err := x509.SystemCertPool()
+	if err != nil {
+		rootCAs = x509.NewCertPool()
+	}
+	if config.CAFile != "" {
+		certificatePEM, readErr := os.ReadFile(config.CAFile)
+		if readErr != nil || !rootCAs.AppendCertsFromPEM(certificatePEM) {
+			return nil, ErrInvalidConfig
+		}
+	}
+	certificates := make([]tls.Certificate, 0, 1)
+	if config.ClientCertificateFile != "" {
+		certificate, loadErr := tls.LoadX509KeyPair(config.ClientCertificateFile, config.ClientKeyFile)
+		if loadErr != nil {
+			return nil, ErrInvalidConfig
+		}
+		certificates = append(certificates, certificate)
+	}
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, ErrInvalidConfig
+	}
+	configuredTransport := transport.Clone()
+	configuredTransport.TLSClientConfig = &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		RootCAs:      rootCAs,
+		Certificates: certificates,
+	}
+	return &http.Client{Timeout: 15 * time.Second, Transport: configuredTransport}, nil
 }
 
 // SignTransfer 请求隔离服务构造并签署一笔 TRC20 转账。

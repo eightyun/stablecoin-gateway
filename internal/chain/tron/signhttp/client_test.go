@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -55,9 +57,46 @@ func TestClientSignsTransferOverHTTPS(t *testing.T) {
 	}
 }
 
+func TestClientTrustsConfiguredCA(t *testing.T) {
+	responseBody, testTxID := signedTransferResponse(t, testAddress, "1000000")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write(responseBody)
+	}))
+	defer server.Close()
+	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	caFile := t.TempDir() + "/signer-ca.pem"
+	if err := os.WriteFile(caFile, certificatePEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := testClientConfig(server.URL)
+	config.CAFile = caFile
+	client, err := New(config, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	transaction, err := client.SignTransfer(context.Background(), tron.TransferSignRequest{
+		RequestID: testRequestID, Network: "tron-nile", ContractAddress: testContract,
+		DestinationAddress: testAddress, Amount: "1000000",
+	})
+	if err != nil || transaction.ID != testTxID {
+		t.Fatalf("SignTransfer() = %+v, %v", transaction, err)
+	}
+}
+
 func TestClientRejectsInvalidConfigurationAndRequest(t *testing.T) {
 	if _, err := New(Config{BaseURL: "http://signer.example", BearerToken: "secret"}, nil); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("New() error = %v", err)
+	}
+	incompleteIdentity := testClientConfig("https://signer.example")
+	incompleteIdentity.ClientCertificateFile = "/tmp/client.crt"
+	if _, err := New(incompleteIdentity, nil); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("New() incomplete client identity error = %v", err)
+	}
+	invalidCA := testClientConfig("https://signer.example")
+	invalidCA.CAFile = t.TempDir() + "/missing.pem"
+	if _, err := New(invalidCA, nil); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("New() invalid CA error = %v", err)
 	}
 	server := httptest.NewTLSServer(http.NotFoundHandler())
 	defer server.Close()

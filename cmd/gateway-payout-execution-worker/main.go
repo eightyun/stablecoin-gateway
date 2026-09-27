@@ -41,7 +41,7 @@ func run(ctx context.Context) error {
 	}
 	broadcaster, err := nodehttp.NewWriter(nodehttp.WriterConfig{
 		BaseURL: cfg.FullNodeURL, APIKey: cfg.NodeAPIKey,
-		MaxResponseBytes: cfg.NodeMaxResponseBytes,
+		MaxResponseBytes: cfg.BroadcastMaxResponseBytes,
 	}, nil)
 	if err != nil {
 		return err

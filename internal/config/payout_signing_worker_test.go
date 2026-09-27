@@ -12,6 +12,9 @@ func TestLoadPayoutSigningWorker(t *testing.T) {
 	t.Setenv("GATEWAY_PAYOUT_SIGNER_BEARER_TOKEN", "secret")
 	t.Setenv("GATEWAY_PAYOUT_SIGNER_ADDRESS", "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb")
 	t.Setenv("GATEWAY_PAYOUT_SIGNER_MAX_FEE_LIMIT", "100000000")
+	t.Setenv("GATEWAY_PAYOUT_SIGNER_CA_FILE", "/run/secrets/signer-ca.pem")
+	t.Setenv("GATEWAY_PAYOUT_SIGNER_CLIENT_CERT_FILE", "/run/secrets/client.crt")
+	t.Setenv("GATEWAY_PAYOUT_SIGNER_CLIENT_KEY_FILE", "/run/secrets/client.key")
 	t.Setenv("GATEWAY_PAYOUT_SIGNING_WORKER_ID", "signer-worker-1")
 	config, err := LoadPayoutSigningWorker()
 	if err != nil {
@@ -19,8 +22,24 @@ func TestLoadPayoutSigningWorker(t *testing.T) {
 	}
 	if config.OperationTimeout != 20*time.Second || config.LeaseDuration != time.Minute ||
 		config.SignerMaxResponseBytes != 2<<20 || config.SignerMaxLifetime != 10*time.Minute ||
-		config.SignerMaxFeeLimit != 100000000 || config.WorkerID != "signer-worker-1" {
+		config.SignerMaxFeeLimit != 100000000 || config.WorkerID != "signer-worker-1" ||
+		config.SignerCAFile != "/run/secrets/signer-ca.pem" ||
+		config.SignerClientCertFile != "/run/secrets/client.crt" ||
+		config.SignerClientKeyFile != "/run/secrets/client.key" {
 		t.Fatalf("LoadPayoutSigningWorker() = %+v", config)
+	}
+}
+
+func TestLoadPayoutSigningWorkerRejectsIncompleteClientIdentity(t *testing.T) {
+	clearPayoutSigningEnvironment(t)
+	t.Setenv("GATEWAY_DATABASE_URL", "postgres://gateway:test@localhost/gateway")
+	t.Setenv("GATEWAY_PAYOUT_SIGNER_URL", "https://signer.example")
+	t.Setenv("GATEWAY_PAYOUT_SIGNER_BEARER_TOKEN", "secret")
+	t.Setenv("GATEWAY_PAYOUT_SIGNER_ADDRESS", "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb")
+	t.Setenv("GATEWAY_PAYOUT_SIGNER_MAX_FEE_LIMIT", "100000000")
+	t.Setenv("GATEWAY_PAYOUT_SIGNER_CLIENT_CERT_FILE", "/run/secrets/client.crt")
+	if _, err := LoadPayoutSigningWorker(); err == nil {
+		t.Fatal("LoadPayoutSigningWorker() 未拒绝不完整客户端身份")
 	}
 }
 
@@ -56,6 +75,8 @@ func clearPayoutSigningEnvironment(t *testing.T) {
 		"GATEWAY_PAYOUT_SIGNER_ADDRESS", "GATEWAY_PAYOUT_SIGNER_MAX_FEE_LIMIT",
 		"GATEWAY_PAYOUT_SIGNER_MAX_TRANSACTION_LIFETIME",
 		"GATEWAY_PAYOUT_SIGNING_WORKER_ID", "GATEWAY_PAYOUT_SIGNER_MAX_RESPONSE_BYTES",
+		"GATEWAY_PAYOUT_SIGNER_CA_FILE", "GATEWAY_PAYOUT_SIGNER_CLIENT_CERT_FILE",
+		"GATEWAY_PAYOUT_SIGNER_CLIENT_KEY_FILE",
 		"GATEWAY_PAYOUT_SIGNING_OPERATION_TIMEOUT", "GATEWAY_PAYOUT_SIGNING_LEASE_DURATION",
 		"GATEWAY_PAYOUT_SIGNING_IDLE_INTERVAL", "GATEWAY_PAYOUT_SIGNING_RETRY_MIN",
 		"GATEWAY_PAYOUT_SIGNING_RETRY_MAX",

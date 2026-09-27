@@ -44,6 +44,8 @@ func run(ctx context.Context) error {
 		ExpectedOwnerAddress: cfg.SignerAddress, MaxFeeLimit: cfg.SignerMaxFeeLimit,
 		MaxTransactionLifetime: cfg.SignerMaxLifetime,
 		MaxResponseBytes:       cfg.SignerMaxResponseBytes,
+		CAFile:                 cfg.SignerCAFile, ClientCertificateFile: cfg.SignerClientCertFile,
+		ClientKeyFile: cfg.SignerClientKeyFile,
 	}, nil)
 	if err != nil {
 		return err

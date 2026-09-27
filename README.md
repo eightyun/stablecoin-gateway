@@ -40,7 +40,7 @@
 - 成功出款原子结算、失败或安全过期出款原子解冻
 - TRON 测试网只读预检与默认关闭的主网广播安全开关
 - 独立的 Nile/Shasta 测试网签名服务、合约/金额白名单与持久化防重复签名
-- Nile 真实 USDT 的签名、广播、固化扫描、充值匹配与双分录入账验证
+- Nile 真实 USDT 的充值入账，以及商户 API 驱动的出款、签名、广播、固化结算与安全过期恢复验证
 - 可用余额与冻结余额分离查询
 
 尚未完成：自动地址筛查、归集、对账、监控告警，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
@@ -155,10 +155,11 @@ export GATEWAY_PAYOUT_SIGNER_URL='https://signer.internal.example'
 export GATEWAY_PAYOUT_SIGNER_BEARER_TOKEN='从密钥管理服务注入'
 export GATEWAY_PAYOUT_SIGNER_ADDRESS='专用热钱包地址'
 export GATEWAY_PAYOUT_SIGNER_MAX_FEE_LIMIT='100000000'
+export GATEWAY_PAYOUT_SIGNER_CA_FILE='/run/secrets/signer-ca.pem'
 go run ./cmd/gateway-payout-signing-worker
 ```
 
-远程签名服务必须实现 `POST /v1/tron/transfers:sign`，按 `Idempotency-Key` 幂等返回同一笔完整签名交易。Worker 会再次解析签名交易，逐项核对付款地址、TRC20 合约、收款地址、金额、`fee_limit` 和有效期，不能只信任 signer 返回的 txID。生产环境应通过 mTLS 服务网格或等价工作负载身份保护该 HTTPS 链路；Bearer Token 仍必须从密钥管理服务注入，不能写入仓库。
+远程签名服务必须实现 `POST /v1/tron/transfers:sign`，按 `Idempotency-Key` 幂等返回同一笔完整签名交易。Worker 会再次解析签名交易，逐项核对付款地址、TRC20 合约、收款地址、金额、`fee_limit` 和有效期，不能只信任 signer 返回的 txID。私有 PKI 可通过 `GATEWAY_PAYOUT_SIGNER_CA_FILE` 追加信任根；直接 mTLS 可再成对配置 `GATEWAY_PAYOUT_SIGNER_CLIENT_CERT_FILE` 与 `GATEWAY_PAYOUT_SIGNER_CLIENT_KEY_FILE`。系统不提供跳过证书校验的开关。生产环境也可通过 mTLS 服务网格或等价工作负载身份保护该 HTTPS 链路；Bearer Token 仍必须从密钥管理服务注入，不能写入仓库。
 
 仓库提供的 `gateway-testnet-signer` 只允许 Nile/Shasta，使用本地文件私钥，明确拒绝主网。它适合下一阶段测试网端到端验收，不是生产密钥托管方案。准备一个独立测试钱包，将 64 位十六进制私钥写入权限为 `0600` 的文件，并创建权限为 `0700` 的幂等存储目录；私钥、Bearer Token 和 TLS 私钥均不得提交到 Git：
 
@@ -192,7 +193,7 @@ export GATEWAY_TRON_API_KEY='从密钥管理服务注入'
 go run ./cmd/gateway-payout-execution-worker
 ```
 
-上述配置已具备测试网签名、广播和确认链路。2026-09-27 已使用全新 Nile 专用钱包完成两项真实测试资产验收：第一笔验证 signer 构造、签名、广播和 SolidityNode 固化确认；第二笔验证 Indexer 捕获真实 Transfer、Deposit Worker 匹配充值意图、双分录入账并生成 `deposit.confirmed` Outbox 事件。对应交易为 [`e7f6ee9…aef39`](https://nile.tronscan.org/#/transaction/e7f6ee9ba5f10f119454d8df0a33b633ca6915a31f2847b82a1d5d25859aef39) 和 [`fa242e1b…cc82b`](https://nile.tronscan.org/#/transaction/fa242e1bdc988f926582b169944ddf6eeb64cac55c7e83e79d38e371385cc82b)。这只是功能性实测，不等同于生产验收；生产环境仍应为节点端点配置独立容灾与监控。
+上述配置已具备测试网签名、广播和确认链路。2026-09-27 已使用全新 Nile 专用钱包完成真实测试资产验收：[`e7f6ee9…aef39`](https://nile.tronscan.org/#/transaction/e7f6ee9ba5f10f119454d8df0a33b633ca6915a31f2847b82a1d5d25859aef39) 验证 signer 构造、签名、广播和 SolidityNode 固化确认；[`fa242e1b…cc82b`](https://nile.tronscan.org/#/transaction/fa242e1bdc988f926582b169944ddf6eeb64cac55c7e83e79d38e371385cc82b) 验证 Indexer 捕获真实 Transfer、Deposit Worker 匹配充值意图、双分录入账并生成 `deposit.confirmed` Outbox；[`86283b5f…e9ac`](https://nile.tronscan.org/#/transaction/86283b5fb90fc9aaf01162aff936df9c2c2b5ad7a89856ee972d691e87f0e9ac) 验证商户 API 创建出款、原子冻资、人工审批、私有 CA Signer、广播、固化确认和账本结算。同轮还验证了交易安全过期且未上链时自动失败并原子解冻。以上只是功能性实测，不等同于生产验收；生产环境仍应为节点端点配置独立容灾与监控。
 
 在配置钱包和远程签名器前，先执行不持有私钥、不写链的 Nile 预检：
 
@@ -226,7 +227,7 @@ v1=HEX(HMAC_SHA256(secret, timestamp + "." + event_id + "." + raw_body))
 
 ## 网络测试门槛
 
-- 测试网：Nile 真实签名、广播、固化扫描、充值匹配和账本入账已完成最小闭环；下一阶段补齐完整商户 API 驱动的出款状态机、异常路径和持续运行测试。
+- 测试网：Nile 真实充值入账与商户 API 驱动的出款成功闭环已经完成，并验证了一条安全过期恢复路径；下一阶段补齐更多故障注入、持续运行、对账与监控。
 - 主网灰度：测试网持续运行、三角对账、监控告警、灾难恢复演练和外部安全审计全部通过后，才允许白名单与小额限额灰度。
 - 主网不作为普通测试环境；任何主网验证都必须有明确损失上限、双人审批和停止开关。
 

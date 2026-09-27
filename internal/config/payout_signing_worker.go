@@ -29,6 +29,9 @@ type PayoutSigningWorkerConfig struct {
 	SignerMaxFeeLimit      int64
 	SignerMaxLifetime      time.Duration
 	SignerMaxResponseBytes int64
+	SignerCAFile           string
+	SignerClientCertFile   string
+	SignerClientKeyFile    string
 	OperationTimeout       time.Duration
 	LeaseDuration          time.Duration
 	IdleInterval           time.Duration
@@ -94,6 +97,12 @@ func LoadPayoutSigningWorker() (PayoutSigningWorkerConfig, error) {
 	if leaseDuration <= operationTimeout+5*time.Second || retryMax < retryMin || maxResponseBytes > 16<<20 {
 		return PayoutSigningWorkerConfig{}, fmt.Errorf("出款签名 Worker 配置关系无效")
 	}
+	signerCAFile := strings.TrimSpace(os.Getenv("GATEWAY_PAYOUT_SIGNER_CA_FILE"))
+	signerClientCertFile := strings.TrimSpace(os.Getenv("GATEWAY_PAYOUT_SIGNER_CLIENT_CERT_FILE"))
+	signerClientKeyFile := strings.TrimSpace(os.Getenv("GATEWAY_PAYOUT_SIGNER_CLIENT_KEY_FILE"))
+	if (signerClientCertFile == "") != (signerClientKeyFile == "") {
+		return PayoutSigningWorkerConfig{}, fmt.Errorf("Signer 客户端证书和私钥必须同时配置")
+	}
 	workerID := strings.TrimSpace(os.Getenv("GATEWAY_PAYOUT_SIGNING_WORKER_ID"))
 	if workerID == "" {
 		workerID = defaultWorkerID()
@@ -107,7 +116,9 @@ func LoadPayoutSigningWorker() (PayoutSigningWorkerConfig, error) {
 		SignerAddress: signerAddress, SignerMaxFeeLimit: signerMaxFeeLimit,
 		SignerMaxLifetime:      signerMaxLifetime,
 		SignerMaxResponseBytes: maxResponseBytes, OperationTimeout: operationTimeout,
-		LeaseDuration: leaseDuration, IdleInterval: idleInterval,
+		SignerCAFile: signerCAFile, SignerClientCertFile: signerClientCertFile,
+		SignerClientKeyFile: signerClientKeyFile,
+		LeaseDuration:       leaseDuration, IdleInterval: idleInterval,
 		RetryMin: retryMin, RetryMax: retryMax,
 	}, nil
 }

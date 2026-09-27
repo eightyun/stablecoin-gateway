@@ -17,8 +17,21 @@ func TestLoadPayoutExecutionWorker(t *testing.T) {
 		t.Fatalf("LoadPayoutExecutionWorker() error = %v", err)
 	}
 	if config.ConfirmationInterval != 10*time.Second || config.LeaseDuration != time.Minute ||
-		config.WorkerID != "execution-1" || config.Network != "tron-nile" {
+		config.WorkerID != "execution-1" || config.Network != "tron-nile" ||
+		config.NodeMaxResponseBytes != 2<<20 || config.BroadcastMaxResponseBytes != 64<<10 {
 		t.Fatalf("LoadPayoutExecutionWorker() = %+v", config)
+	}
+}
+
+func TestLoadPayoutExecutionWorkerRejectsOversizedBroadcastResponse(t *testing.T) {
+	clearPayoutExecutionEnvironment(t)
+	t.Setenv("GATEWAY_DATABASE_URL", "postgres://gateway:test@localhost/gateway")
+	t.Setenv("GATEWAY_PAYOUT_TRON_FULL_NODE_URL", "https://full.example")
+	t.Setenv("GATEWAY_PAYOUT_TRON_SOLIDITY_NODE_URL", "https://solidity.example")
+	t.Setenv("GATEWAY_TRON_NETWORK", "tron-nile")
+	t.Setenv("GATEWAY_PAYOUT_BROADCAST_MAX_RESPONSE_BYTES", "1048577")
+	if _, err := LoadPayoutExecutionWorker(); err == nil {
+		t.Fatal("LoadPayoutExecutionWorker() 未拒绝过大的广播响应上限")
 	}
 }
 
@@ -57,6 +70,7 @@ func clearPayoutExecutionEnvironment(t *testing.T) {
 		"GATEWAY_PAYOUT_TRON_SOLIDITY_NODE_URL", "GATEWAY_TRON_NETWORK", "GATEWAY_TRON_API_KEY",
 		"GATEWAY_TRON_MAINNET_ENABLED",
 		"GATEWAY_PAYOUT_EXECUTION_WORKER_ID", "GATEWAY_PAYOUT_NODE_MAX_RESPONSE_BYTES",
+		"GATEWAY_PAYOUT_BROADCAST_MAX_RESPONSE_BYTES",
 		"GATEWAY_PAYOUT_EXECUTION_OPERATION_TIMEOUT", "GATEWAY_PAYOUT_EXECUTION_LEASE_DURATION",
 		"GATEWAY_PAYOUT_CONFIRMATION_INTERVAL", "GATEWAY_PAYOUT_EXECUTION_IDLE_INTERVAL",
 		"GATEWAY_PAYOUT_EXECUTION_RETRY_MIN", "GATEWAY_PAYOUT_EXECUTION_RETRY_MAX",
