@@ -113,7 +113,9 @@ func (store *Store) RunLedgerIntegrity(ctx context.Context) (result RunResult, e
 	detectors := []func(context.Context, pgx.Tx) ([]finding, int64, error){
 		detectUnbalancedTransactions,
 		detectDepositLedgerMismatches,
+		detectDepositLedgerSemanticMismatches,
 		detectPayoutLedgerMismatches,
+		detectPayoutLedgerSemanticMismatches,
 	}
 	findings := make([]finding, 0)
 	for _, detect := range detectors {

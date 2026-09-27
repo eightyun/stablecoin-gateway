@@ -4,7 +4,7 @@
 
 [stablecoin-gateway](https://github.com/eightyun/stablecoin-gateway) is a production-oriented, open-source stablecoin payment system for merchants. Its target scope includes deposits, payouts, double-entry accounting, blockchain indexing, merchant webhooks, reconciliation, and failure recovery.
 
-The first stable release focuses on USDT-TRC20. EVM networks will be added through chain adapters, while x402 support will remain an independent extension.
+The first stable release focuses on USDT-TRC20, with EVM networks added later through chain adapters. x402 remains an independent scheme/network extension, does not depend on EVM, and can be validated on TRON Nile first.
 
 ## Project Status
 
@@ -42,7 +42,7 @@ Implemented components:
 - Isolated Nile/Shasta testnet signer with contract/amount policy and durable replay protection
 - Live Nile USDT validation covering deposit posting plus merchant-API-driven payout, signing, broadcast, finalized settlement, and safe expiry recovery
 - Separate available and frozen balance reporting
-- Repeatable-read ledger/business-reference reconciliation with deduplicated cases and audited resolution
+- Repeatable-read reconciliation of ledger references, amounts, debit/credit direction, and account ownership, with deduplicated cases and audited resolution
 
 Not yet implemented: automated address screening, wallet sweeping, full four-layer on-chain wallet reconciliation, monitoring and alerting, and a production KMS/HSM/MPC signing backend.
 

@@ -22,25 +22,39 @@ func TestStoreReusesResolvesAndReopensReconciliationCase(t *testing.T) {
 	if err != nil || first.FindingCount < 1 || first.CheckedItems < 2 {
 		t.Fatalf("首次 RunLedgerIntegrity() = %+v, %v", first, err)
 	}
-	caseID, status, occurrences := fixture.caseState(t, fixture.intentID, "open")
+	caseID, status, occurrences := fixture.caseState(t, fixture.intentID, ruleDepositLedgerMismatch, "open")
 	if occurrences != 1 {
 		t.Fatalf("首次工单 occurrences=%d", occurrences)
 	}
-	openCases, err := fixture.store.ListOpenCases(context.Background(), 1000)
-	if err != nil || !containsCase(openCases, caseID) {
-		t.Fatalf("ListOpenCases() 未返回新工单 id=%s cases=%+v error=%v", caseID, openCases, err)
+	semanticCaseID, _, semanticOccurrences := fixture.caseState(
+		t, fixture.semanticIntentID, ruleDepositLedgerSemanticMismatch, "open",
+	)
+	if semanticOccurrences != 1 {
+		t.Fatalf("首次语义工单 occurrences=%d", semanticOccurrences)
 	}
-	fixture.assertObservation(t, first.RunID, caseID)
+	openCases, err := fixture.store.ListOpenCases(context.Background(), 1000)
+	if err != nil || !containsCase(openCases, caseID) || !containsCase(openCases, semanticCaseID) {
+		t.Fatalf("ListOpenCases() 未返回新工单 ids=%s/%s cases=%+v error=%v",
+			caseID, semanticCaseID, openCases, err)
+	}
+	fixture.assertReferenceObservation(t, first.RunID, caseID)
+	fixture.assertSemanticObservation(t, first.RunID, semanticCaseID)
 
 	second, err := fixture.store.RunLedgerIntegrity(context.Background())
 	if err != nil || second.RunID == first.RunID {
 		t.Fatalf("重复 RunLedgerIntegrity() = %+v, %v", second, err)
 	}
-	reusedID, status, occurrences := fixture.caseState(t, fixture.intentID, "open")
+	reusedID, status, occurrences := fixture.caseState(t, fixture.intentID, ruleDepositLedgerMismatch, "open")
 	if reusedID != caseID || status != "open" || occurrences != 2 {
 		t.Fatalf("重复工单 id=%s status=%s occurrences=%d", reusedID, status, occurrences)
 	}
-	fixture.assertObservation(t, second.RunID, caseID)
+	fixture.assertReferenceObservation(t, second.RunID, caseID)
+	reusedSemanticID, _, semanticOccurrences := fixture.caseState(
+		t, fixture.semanticIntentID, ruleDepositLedgerSemanticMismatch, "open",
+	)
+	if reusedSemanticID != semanticCaseID || semanticOccurrences != 2 {
+		t.Fatalf("重复语义工单 id=%s occurrences=%d", reusedSemanticID, semanticOccurrences)
+	}
 
 	request := ResolveRequest{CaseID: caseID, Actor: "ops@example.com", Reason: "已核实测试差异"}
 	if err := fixture.store.ResolveCase(context.Background(), request); err != nil {
@@ -55,19 +69,101 @@ func TestStoreReusesResolvesAndReopensReconciliationCase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("再次 RunLedgerIntegrity() error = %v", err)
 	}
-	reopenedID, _, reopenedOccurrences := fixture.caseState(t, fixture.intentID, "open")
+	reopenedID, _, reopenedOccurrences := fixture.caseState(
+		t, fixture.intentID, ruleDepositLedgerMismatch, "open",
+	)
 	if reopenedID == caseID || reopenedOccurrences != 1 {
 		t.Fatalf("重新打开工单 id=%s old=%s occurrences=%d", reopenedID, caseID, reopenedOccurrences)
 	}
-	fixture.assertObservation(t, third.RunID, reopenedID)
+	fixture.assertReferenceObservation(t, third.RunID, reopenedID)
 	fixture.assertImmutable(t, first.RunID, caseID)
 	fixture.assertConcurrentRunRejected(t)
 }
 
+func TestDetectPayoutLedgerSemanticMismatch(t *testing.T) {
+	databaseURL := os.Getenv("GATEWAY_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("未设置 GATEWAY_TEST_DATABASE_URL")
+	}
+	ctx := context.Background()
+	pool, err := database.Open(ctx, database.DefaultConfig(databaseURL, "reconciliation-payout-semantics-test"))
+	if err != nil {
+		t.Fatalf("连接测试数据库: %v", err)
+	}
+	defer pool.Close()
+	transaction, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("开始测试事务: %v", err)
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+
+	assetID := "recon-payout-" + reconciliationUUID(t)
+	merchantID := reconciliationUUID(t)
+	custodyID, availableID, frozenID := reconciliationUUID(t), reconciliationUUID(t), reconciliationUUID(t)
+	if _, err := transaction.Exec(ctx, `
+		INSERT INTO assets (id, network, contract_address, symbol, decimals, status)
+		VALUES ($1, 'tron-reconciliation', $2, 'USDT', 6, 'active')
+	`, assetID, "contract-"+assetID); err != nil {
+		t.Fatalf("创建出款语义测试资产: %v", err)
+	}
+	if _, err := transaction.Exec(ctx, `
+		INSERT INTO merchants (id, name, status)
+		VALUES ($1, 'reconciliation payout merchant', 'active')
+	`, merchantID); err != nil {
+		t.Fatalf("创建出款语义测试商户: %v", err)
+	}
+	if _, err := transaction.Exec(ctx, `
+		INSERT INTO ledger_accounts (id, owner_type, owner_id, asset_id, code, normal_side, status)
+		VALUES
+			($1, 'platform', 'gateway', $4, 'custody', 'D', 'active'),
+			($2, 'merchant', $5, $4, 'available', 'C', 'active'),
+			($3, 'merchant', $5, $4, 'frozen', 'C', 'active')
+	`, custodyID, availableID, frozenID, assetID, merchantID); err != nil {
+		t.Fatalf("创建出款语义测试账本科目: %v", err)
+	}
+	payoutID := reconciliationUUID(t)
+	journalID := reconciliationUUID(t)
+	if _, err := ledger.PostInTransaction(ctx, transaction, ledger.Transaction{
+		ID: journalID, RequesterType: "merchant", RequesterID: merchantID,
+		IdempotencyKey: "payout-freeze:" + payoutID,
+		ReferenceType:  "payout_freeze", ReferenceID: payoutID,
+		Entries: []ledger.Entry{
+			{AccountID: availableID, AssetID: assetID, Side: ledger.Debit, Amount: 90},
+			{AccountID: frozenID, AssetID: assetID, Side: ledger.Credit, Amount: 90},
+		},
+	}); err != nil {
+		t.Fatalf("创建出款语义错配交易: %v", err)
+	}
+	if _, err := transaction.Exec(ctx, `
+		INSERT INTO payouts (
+			id, merchant_id, asset_id, idempotency_key, merchant_reference,
+			request_hash, destination_address, amount, status, freeze_transaction_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, 100, 'pending_review', $8)
+	`, payoutID, merchantID, assetID, "semantic-"+payoutID, "semantic-"+payoutID,
+		strings.Repeat("c", 64), "410000000000000000000000000000000000000000", journalID); err != nil {
+		t.Fatalf("创建出款语义错配业务单: %v", err)
+	}
+	referenceFindings, _, err := detectPayoutLedgerMismatches(ctx, transaction)
+	if err != nil {
+		t.Fatalf("detectPayoutLedgerMismatches() error = %v", err)
+	}
+	if containsFinding(referenceFindings, payoutID+":freeze") {
+		t.Fatal("引用正确的出款被引用规则误报")
+	}
+	semanticFindings, _, err := detectPayoutLedgerSemanticMismatches(ctx, transaction)
+	if err != nil {
+		t.Fatalf("detectPayoutLedgerSemanticMismatches() error = %v", err)
+	}
+	if !containsFinding(semanticFindings, payoutID+":freeze") {
+		t.Fatalf("账务语义规则未发现出款金额错配 findings=%+v", semanticFindings)
+	}
+}
+
 type reconciliationFixture struct {
-	store    *Store
-	pool     *pgxpool.Pool
-	intentID string
+	store            *Store
+	pool             *pgxpool.Pool
+	intentID         string
+	semanticIntentID string
 }
 
 func newReconciliationFixture(t *testing.T) reconciliationFixture {
@@ -139,16 +235,52 @@ func newReconciliationFixture(t *testing.T) reconciliationFixture {
 		"recon-ref-"+intentID, strings.Repeat("a", 64), journalID); err != nil {
 		t.Fatalf("创建账务引用错配充值: %v", err)
 	}
+	semanticIntentID := reconciliationUUID(t)
+	semanticJournalID := reconciliationUUID(t)
+	if _, err := repository.Post(ctx, ledger.Transaction{
+		ID: semanticJournalID, RequesterType: "system", RequesterID: "reconciliation-test",
+		IdempotencyKey: "semantic:" + semanticIntentID,
+		ReferenceType:  "deposit", ReferenceID: semanticIntentID,
+		Entries: []ledger.Entry{
+			{AccountID: custodyAccountID, AssetID: assetID, Side: ledger.Debit, Amount: 90},
+			{AccountID: availableAccountID, AssetID: assetID, Side: ledger.Credit, Amount: 90},
+		},
+	}); err != nil {
+		t.Fatalf("创建账务语义错配交易: %v", err)
+	}
+	semanticAddressID := reconciliationUUID(t)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO deposit_addresses (id, merchant_id, asset_id, address, status)
+		VALUES ($1, $2, $3, $4, 'active')
+	`, semanticAddressID, merchantID, assetID, "reconciliation-address-"+semanticAddressID); err != nil {
+		t.Fatalf("创建语义测试充值地址: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO deposit_intents (
+			id, merchant_id, asset_id, deposit_address_id, idempotency_key,
+			merchant_reference, request_hash, expected_amount, received_amount,
+			status, expires_at, ledger_transaction_id, credited_amount, credited_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, 100, 100, 'paid',
+		          CURRENT_TIMESTAMP + INTERVAL '1 hour', $8, 100, CURRENT_TIMESTAMP)
+	`, semanticIntentID, merchantID, assetID, semanticAddressID, "recon-idem-"+semanticIntentID,
+		"recon-ref-"+semanticIntentID, strings.Repeat("b", 64), semanticJournalID); err != nil {
+		t.Fatalf("创建账务语义错配充值: %v", err)
+	}
 	store, err := NewStore(pool)
 	if err != nil {
 		t.Fatalf("NewStore() error = %v", err)
 	}
-	fixture := reconciliationFixture{store: store, pool: pool, intentID: intentID}
+	fixture := reconciliationFixture{
+		store: store, pool: pool, intentID: intentID, semanticIntentID: semanticIntentID,
+	}
 	t.Cleanup(func() { fixture.cleanup(t) })
 	return fixture
 }
 
-func (fixture reconciliationFixture) caseState(t *testing.T, intentID, expectedStatus string) (string, string, int64) {
+func (fixture reconciliationFixture) caseState(
+	t *testing.T,
+	intentID, ruleCode, expectedStatus string,
+) (string, string, int64) {
 	t.Helper()
 	var caseID, status string
 	var occurrences int64
@@ -158,13 +290,13 @@ func (fixture reconciliationFixture) caseState(t *testing.T, intentID, expectedS
 		WHERE rule_code = $1 AND resource_type = 'deposit_intent'
 		  AND resource_id = $2 AND status = $3
 		ORDER BY opened_at DESC LIMIT 1
-	`, ruleDepositLedgerMismatch, intentID, expectedStatus).Scan(&caseID, &status, &occurrences); err != nil {
+	`, ruleCode, intentID, expectedStatus).Scan(&caseID, &status, &occurrences); err != nil {
 		t.Fatalf("查询对账工单: %v", err)
 	}
 	return caseID, status, occurrences
 }
 
-func (fixture reconciliationFixture) assertObservation(t *testing.T, runID, caseID string) {
+func (fixture reconciliationFixture) assertReferenceObservation(t *testing.T, runID, caseID string) {
 	t.Helper()
 	var evidence string
 	if err := fixture.pool.QueryRow(context.Background(), `
@@ -172,6 +304,19 @@ func (fixture reconciliationFixture) assertObservation(t *testing.T, runID, case
 		WHERE run_id = $1 AND case_id = $2
 	`, runID, caseID).Scan(&evidence); err != nil || !strings.Contains(evidence, `"expected_reference_type": "deposit"`) {
 		t.Fatalf("对账观察 evidence=%s error=%v", evidence, err)
+	}
+}
+
+func (fixture reconciliationFixture) assertSemanticObservation(t *testing.T, runID, caseID string) {
+	t.Helper()
+	var evidence string
+	if err := fixture.pool.QueryRow(context.Background(), `
+		SELECT evidence::TEXT FROM reconciliation_observations
+		WHERE run_id = $1 AND case_id = $2
+	`, runID, caseID).Scan(&evidence); err != nil ||
+		!strings.Contains(evidence, `"expected_amount": "100"`) ||
+		!strings.Contains(evidence, `"debit_total": "90"`) {
+		t.Fatalf("账务语义观察 evidence=%s error=%v", evidence, err)
 	}
 }
 
@@ -237,15 +382,16 @@ func (fixture reconciliationFixture) cleanup(t *testing.T) {
 		SET status = 'pending', received_amount = 0,
 		    ledger_transaction_id = NULL, credited_amount = 0, credited_at = NULL,
 		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-	`, fixture.intentID); err != nil {
+		WHERE id IN ($1, $2)
+	`, fixture.intentID, fixture.semanticIntentID); err != nil {
 		t.Errorf("清理对账测试充值意图: %v", err)
 		return
 	}
 	rows, err := fixture.pool.Query(ctx, `
 		SELECT id::TEXT FROM reconciliation_cases
-		WHERE resource_type = 'deposit_intent' AND resource_id = $1 AND status = 'open'
-	`, fixture.intentID)
+		WHERE resource_type = 'deposit_intent'
+		  AND resource_id IN ($1, $2) AND status = 'open'
+	`, fixture.intentID, fixture.semanticIntentID)
 	if err != nil {
 		t.Errorf("查询待清理对账工单: %v", err)
 		return
@@ -287,6 +433,15 @@ func reconciliationUUID(t *testing.T) string {
 func containsCase(cases []Case, caseID string) bool {
 	for _, item := range cases {
 		if item.ID == caseID {
+			return true
+		}
+	}
+	return false
+}
+
+func containsFinding(findings []finding, resourceID string) bool {
+	for _, item := range findings {
+		if item.ResourceID == resourceID {
 			return true
 		}
 	}
