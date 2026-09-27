@@ -72,3 +72,22 @@ func TestParseReconciliationOptions(t *testing.T) {
 		t.Fatalf("invalid list options error = %v", err)
 	}
 }
+
+func TestParseRegisterCustodyWalletOptions(t *testing.T) {
+	options, err := parseRegisterCustodyWalletOptions([]string{
+		"register-custody-wallet", "--asset-id", "usdt-tron-nile",
+		"--address", "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb", "--role", "hot",
+		"--actor", "ops@example.com", "--reason", "primary payout wallet",
+	})
+	if err != nil || options.role != "hot" || options.actor != "ops@example.com" {
+		t.Fatalf("parseRegisterCustodyWalletOptions() = %+v, %v", options, err)
+	}
+	for _, args := range [][]string{
+		{"register-custody-wallet", "--asset-id", "asset", "--address", "address", "--role", "deposit", "--actor", "ops", "--reason", "invalid role"},
+		{"register-custody-wallet", "--asset-id", "asset", "--address", "address", "--role", "hot", "--actor", "ops"},
+	} {
+		if _, err := parseRegisterCustodyWalletOptions(args); !errors.Is(err, errUsage) {
+			t.Fatalf("args=%v error=%v", args, err)
+		}
+	}
+}

@@ -22,7 +22,7 @@ import (
 	"github.com/eightyun/stablecoin-gateway/internal/webhook"
 )
 
-var errUsage = errors.New("用法: gateway-admin create-api-key --merchant-id UUID --name NAME [--expires-at RFC3339] | create-webhook-endpoint --merchant-id UUID --name NAME --url HTTPS_URL | approve-payout --payout-id UUID --reviewer ID --reason TEXT | reject-payout --payout-id UUID --reviewer ID --reason TEXT | list-reconciliation-cases [--limit 100] | resolve-reconciliation-case --case-id UUID --actor ID --reason TEXT")
+var errUsage = errors.New("用法: gateway-admin create-api-key --merchant-id UUID --name NAME [--expires-at RFC3339] | create-webhook-endpoint --merchant-id UUID --name NAME --url HTTPS_URL | register-custody-wallet --asset-id ID --address ADDRESS --role hot|cold|fee --actor ID --reason TEXT | approve-payout --payout-id UUID --reviewer ID --reason TEXT | reject-payout --payout-id UUID --reviewer ID --reason TEXT | list-reconciliation-cases [--limit 100] | resolve-reconciliation-case --case-id UUID --actor ID --reason TEXT")
 
 type createAPIKeyOptions struct {
 	merchantID string
@@ -54,6 +54,8 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		return runCreateAPIKey(ctx, args, output)
 	case "create-webhook-endpoint":
 		return runCreateWebhookEndpoint(ctx, args, output)
+	case "register-custody-wallet":
+		return runRegisterCustodyWallet(ctx, args, output)
 	case "approve-payout":
 		return runReviewPayout(ctx, args, output, payout.DecisionApprove)
 	case "reject-payout":

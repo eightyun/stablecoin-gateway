@@ -87,6 +87,19 @@ go run ./cmd/gateway-wallet-snapshot
 
 The migration backfills existing deposit addresses as `deposit` custody wallets, and new deposit addresses are registered atomically. This command only stores an immutable on-chain snapshot; it does not compare the ledger or adjust balances.
 
+Register a hot, cold, or fee wallet that must be included in snapshots:
+
+```bash
+go run ./cmd/gateway-admin register-custody-wallet \
+  --asset-id 'usdt-tron-nile' \
+  --address 'T...' \
+  --role 'hot' \
+  --actor 'ops@example.com' \
+  --reason 'primary payout wallet'
+```
+
+Addresses are stored as normalized lowercase `41`-prefixed hex. The wallet and immutable registration audit commit in one transaction; the command cannot create `deposit` wallets.
+
 Run ledger and business-reference reconciliation, then list open cases:
 
 ```bash

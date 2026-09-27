@@ -87,6 +87,19 @@ go run ./cmd/gateway-wallet-snapshot
 
 迁移会把已有充值地址回填为 `deposit` 托管钱包，新充值地址也会原子登记。当前命令只保存不可变链上快照，不进行账本比较或自动调账。
 
+登记参与快照的热钱包、冷钱包或手续费钱包：
+
+```bash
+go run ./cmd/gateway-admin register-custody-wallet \
+  --asset-id 'usdt-tron-nile' \
+  --address 'T...' \
+  --role 'hot' \
+  --actor 'ops@example.com' \
+  --reason 'primary payout wallet'
+```
+
+地址会统一保存为 `41` 前缀的小写十六进制。登记操作和审计记录在同一事务提交；`deposit` 角色不能通过该命令创建。
+
 执行账本与业务引用对账，并查看未关闭工单：
 
 ```bash
