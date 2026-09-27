@@ -18,6 +18,7 @@ import (
 
 const (
 	RunKindLedgerIntegrity = "ledger_integrity"
+	RunKindWalletAssets    = "wallet_assets"
 	SeverityWarning        = "warning"
 	SeverityCritical       = "critical"
 	reconciliationLockKey  = int64(0x7374677265636f6e)
@@ -69,6 +70,8 @@ type finding struct {
 	Evidence     []byte
 }
 
+type detector func(context.Context, pgx.Tx) ([]finding, int64, error)
+
 // Store 使用 PostgreSQL 保存对账运行、差异观察和工单。
 type Store struct {
 	db *pgxpool.Pool
@@ -84,6 +87,21 @@ func NewStore(db *pgxpool.Pool) (*Store, error) {
 
 // RunLedgerIntegrity 在同一可重复读快照中检测账务及业务引用差异。
 func (store *Store) RunLedgerIntegrity(ctx context.Context) (result RunResult, err error) {
+	return store.run(ctx, RunKindLedgerIntegrity, []detector{
+		detectUnbalancedTransactions,
+		detectDepositLedgerMismatches,
+		detectDepositLedgerSemanticMismatches,
+		detectPayoutLedgerMismatches,
+		detectPayoutLedgerSemanticMismatches,
+	})
+}
+
+// RunWalletAssets 比较同一快照内的链上托管余额与账本托管余额。
+func (store *Store) RunWalletAssets(ctx context.Context) (result RunResult, err error) {
+	return store.run(ctx, RunKindWalletAssets, []detector{detectWalletCustodyBalanceMismatches})
+}
+
+func (store *Store) run(ctx context.Context, kind string, detectors []detector) (result RunResult, err error) {
 	transaction, err := store.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return RunResult{}, fmt.Errorf("开始对账事务: %w", err)
@@ -101,7 +119,7 @@ func (store *Store) RunLedgerIntegrity(ctx context.Context) (result RunResult, e
 		return RunResult{}, ErrRunInProgress
 	}
 
-	result.Kind = RunKindLedgerIntegrity
+	result.Kind = kind
 	if err = transaction.QueryRow(ctx, `SELECT CURRENT_TIMESTAMP`).Scan(&result.SnapshotAt); err != nil {
 		return RunResult{}, fmt.Errorf("读取对账快照时间: %w", err)
 	}
@@ -110,13 +128,6 @@ func (store *Store) RunLedgerIntegrity(ctx context.Context) (result RunResult, e
 		return RunResult{}, err
 	}
 
-	detectors := []func(context.Context, pgx.Tx) ([]finding, int64, error){
-		detectUnbalancedTransactions,
-		detectDepositLedgerMismatches,
-		detectDepositLedgerSemanticMismatches,
-		detectPayoutLedgerMismatches,
-		detectPayoutLedgerSemanticMismatches,
-	}
 	findings := make([]finding, 0)
 	for _, detect := range detectors {
 		var detected []finding

@@ -49,6 +49,7 @@ type Snapshot struct {
 	Block        tron.Header
 	Balances     []Balance
 	TotalBalance string
+	Ledger       LedgerCheckpoint
 }
 
 // CollectSnapshot 串行读取所有钱包余额，并用前后固化头保证采样未跨高度。

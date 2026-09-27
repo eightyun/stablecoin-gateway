@@ -103,6 +103,7 @@ type balanceReaderStub struct {
 	headers    []tron.Header
 	balances   map[string]string
 	balanceErr error
+	onBalance  func()
 	readIndex  int
 }
 
@@ -118,6 +119,11 @@ func (stub *balanceReaderStub) SolidifiedHead(context.Context) (tron.Header, err
 func (stub *balanceReaderStub) TokenBalance(_ context.Context, _, ownerAddress string) (string, error) {
 	if stub.balanceErr != nil {
 		return "", stub.balanceErr
+	}
+	if stub.onBalance != nil {
+		callback := stub.onBalance
+		stub.onBalance = nil
+		callback()
 	}
 	return stub.balances[ownerAddress], nil
 }

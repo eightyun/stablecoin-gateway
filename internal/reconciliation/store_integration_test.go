@@ -159,6 +159,134 @@ func TestDetectPayoutLedgerSemanticMismatch(t *testing.T) {
 	}
 }
 
+func TestStoreReconcilesWalletAndLedgerCheckpoint(t *testing.T) {
+	databaseURL := os.Getenv("GATEWAY_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("未设置 GATEWAY_TEST_DATABASE_URL")
+	}
+	ctx := context.Background()
+	pool, err := database.Open(ctx, database.DefaultConfig(databaseURL, "wallet-reconciliation-test"))
+	if err != nil {
+		t.Fatalf("连接测试数据库: %v", err)
+	}
+	defer pool.Close()
+
+	assetID := "wallet-recon-" + reconciliationUUID(t)
+	custodyAccountID, equityAccountID := reconciliationUUID(t), reconciliationUUID(t)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO assets (id, network, contract_address, symbol, decimals, status)
+		VALUES ($1, 'tron-wallet-reconciliation', $2, 'USDT', 6, 'active')
+	`, assetID, "contract-"+assetID); err != nil {
+		t.Fatalf("创建钱包对账测试资产: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO ledger_accounts (id, owner_type, owner_id, asset_id, code, normal_side, status)
+		VALUES
+			($1, 'platform', 'gateway', $3, 'custody', 'D', 'active'),
+			($2, 'platform', 'gateway', $3, 'equity', 'C', 'active')
+	`, custodyAccountID, equityAccountID, assetID); err != nil {
+		t.Fatalf("创建钱包对账测试账本科目: %v", err)
+	}
+	repository, err := ledger.NewPostgreSQLRepository(pool)
+	if err != nil {
+		t.Fatalf("NewPostgreSQLRepository() error = %v", err)
+	}
+	journalID := reconciliationUUID(t)
+	if _, err := repository.Post(ctx, ledger.Transaction{
+		ID: journalID, RequesterType: "system", RequesterID: "wallet-reconciliation-test",
+		IdempotencyKey: "seed:" + journalID, ReferenceType: "seed", ReferenceID: journalID,
+		Entries: []ledger.Entry{
+			{AccountID: custodyAccountID, AssetID: assetID, Side: ledger.Debit, Amount: 100},
+			{AccountID: equityAccountID, AssetID: assetID, Side: ledger.Credit, Amount: 100},
+		},
+	}); err != nil {
+		t.Fatalf("准备钱包对账测试账务: %v", err)
+	}
+	walletID := reconciliationUUID(t)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO custody_wallets (id, asset_id, address, role, status)
+		VALUES ($1, $2, $3, 'deposit', 'active')
+	`, walletID, assetID, "wallet-"+walletID); err != nil {
+		t.Fatalf("创建钱包对账测试钱包: %v", err)
+	}
+	insertSnapshot := func(total int64, capturedAt time.Time) string {
+		t.Helper()
+		runID := reconciliationUUID(t)
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO wallet_balance_snapshot_runs (
+				id, asset_id, block_height, block_hash, block_time, wallet_count, total_balance,
+				captured_at, ledger_account_id, ledger_entry_count, ledger_balance
+			) VALUES ($1, $2, 100, $3, $4, 1, $5, $6, $7, 1, 100)
+		`, runID, assetID, strings.Repeat("d", 64), capturedAt, total, capturedAt,
+			custodyAccountID); err != nil {
+			t.Fatalf("创建钱包对账快照运行: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO wallet_balance_snapshots (run_id, wallet_id, asset_id, balance)
+			VALUES ($1, $2, $3, $4)
+		`, runID, walletID, assetID, total); err != nil {
+			t.Fatalf("创建钱包对账余额快照: %v", err)
+		}
+		return runID
+	}
+
+	store, err := NewStore(pool)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	baseTime := time.Now().UTC().Add(-3 * time.Minute)
+	insertSnapshot(90, baseTime)
+	shortfallRun, err := store.RunWalletAssets(ctx)
+	if err != nil || shortfallRun.Kind != RunKindWalletAssets || shortfallRun.CheckedItems < 1 || shortfallRun.FindingCount < 1 {
+		t.Fatalf("短款 RunWalletAssets() = %+v, %v", shortfallRun, err)
+	}
+	assertWalletCase(t, pool, shortfallRun.RunID, assetID,
+		ruleWalletCustodyBalanceShortfall, SeverityCritical, `"difference": "-10"`)
+
+	insertSnapshot(110, baseTime.Add(time.Minute))
+	excessRun, err := store.RunWalletAssets(ctx)
+	if err != nil || excessRun.FindingCount < 1 {
+		t.Fatalf("长款 RunWalletAssets() = %+v, %v", excessRun, err)
+	}
+	assertWalletCase(t, pool, excessRun.RunID, assetID,
+		ruleWalletCustodyBalanceExcess, SeverityWarning, `"difference": "10"`)
+
+	insertSnapshot(100, baseTime.Add(2*time.Minute))
+	equalRun, err := store.RunWalletAssets(ctx)
+	if err != nil {
+		t.Fatalf("相等 RunWalletAssets() error = %v", err)
+	}
+	var observations int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM reconciliation_observations AS observation
+		JOIN reconciliation_cases AS reconciliation_case ON reconciliation_case.id = observation.case_id
+		WHERE observation.run_id = $1 AND reconciliation_case.asset_id = $2
+	`, equalRun.RunID, assetID).Scan(&observations); err != nil || observations != 0 {
+		t.Fatalf("相等快照 observations=%d error=%v", observations, err)
+	}
+}
+
+func assertWalletCase(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	runID, assetID, ruleCode, severity, evidencePart string,
+) {
+	t.Helper()
+	var actualSeverity, evidence string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT reconciliation_case.severity, observation.evidence::TEXT
+		FROM reconciliation_observations AS observation
+		JOIN reconciliation_cases AS reconciliation_case ON reconciliation_case.id = observation.case_id
+		WHERE observation.run_id = $1
+		  AND reconciliation_case.asset_id = $2
+		  AND reconciliation_case.rule_code = $3
+	`, runID, assetID, ruleCode).Scan(&actualSeverity, &evidence); err != nil ||
+		actualSeverity != severity || !strings.Contains(evidence, evidencePart) {
+		t.Fatalf("钱包对账工单 severity=%s evidence=%s error=%v", actualSeverity, evidence, err)
+	}
+}
+
 type reconciliationFixture struct {
 	store            *Store
 	pool             *pgxpool.Pool

@@ -106,6 +106,16 @@ func (store *Store) SaveSnapshot(ctx context.Context, snapshot Snapshot) (err er
 	if network != snapshot.Asset.Network || contractAddress != snapshot.Asset.ContractAddress {
 		return ErrInvalidSnapshot
 	}
+	checkpoint, err := readLedgerCheckpoint(ctx, transaction, snapshot.Asset.ID)
+	if err != nil {
+		return err
+	}
+	if checkpoint.InFlightPayouts != 0 {
+		return ErrPayoutInFlight
+	}
+	if checkpoint != snapshot.Ledger {
+		return ErrLedgerChanged
+	}
 
 	currentWalletIDs, err := activeWalletIDs(ctx, transaction, snapshot.Asset.ID)
 	if err != nil {
@@ -122,10 +132,12 @@ func (store *Store) SaveSnapshot(ctx context.Context, snapshot Snapshot) (err er
 
 	if _, err = transaction.Exec(ctx, `
 		INSERT INTO wallet_balance_snapshot_runs (
-			id, asset_id, block_height, block_hash, block_time, wallet_count, total_balance
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+			id, asset_id, block_height, block_hash, block_time, wallet_count, total_balance,
+			ledger_account_id, ledger_entry_count, ledger_balance
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, snapshot.ID, snapshot.Asset.ID, int64(snapshot.Block.Height), snapshot.Block.Hash,
-		snapshot.Block.Timestamp, len(snapshot.Balances), snapshot.TotalBalance); err != nil {
+		snapshot.Block.Timestamp, len(snapshot.Balances), snapshot.TotalBalance,
+		snapshot.Ledger.AccountID, snapshot.Ledger.EntryCount, snapshot.Ledger.Balance); err != nil {
 		return fmt.Errorf("保存钱包快照运行: %w", err)
 	}
 	for _, balance := range snapshot.Balances {
@@ -170,7 +182,12 @@ func activeWalletIDs(ctx context.Context, transaction pgx.Tx, assetID string) ([
 func validateSnapshot(snapshot Snapshot) error {
 	if !identity.ValidUUID(snapshot.ID) || !validHeader(snapshot.Block) || len(snapshot.Balances) == 0 ||
 		strings.TrimSpace(snapshot.Asset.ID) == "" || strings.TrimSpace(snapshot.Asset.Network) == "" ||
-		strings.TrimSpace(snapshot.Asset.ContractAddress) == "" {
+		strings.TrimSpace(snapshot.Asset.ContractAddress) == "" ||
+		!identity.ValidUUID(snapshot.Ledger.AccountID) || snapshot.Ledger.EntryCount < 0 ||
+		snapshot.Ledger.InFlightPayouts != 0 {
+		return ErrInvalidSnapshot
+	}
+	if _, valid := parseAmount(snapshot.Ledger.Balance); !valid {
 		return ErrInvalidSnapshot
 	}
 	seen := make(map[string]struct{}, len(snapshot.Balances))

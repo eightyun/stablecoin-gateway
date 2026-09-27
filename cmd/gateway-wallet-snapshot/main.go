@@ -54,7 +54,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	snapshot, err := wallet.CollectSnapshot(ctx, reader, asset, wallets)
+	snapshot, err := store.CaptureSnapshot(ctx, reader, asset, wallets)
 	if err != nil {
 		return err
 	}
@@ -62,18 +62,22 @@ func run(ctx context.Context) error {
 		return err
 	}
 	result := struct {
-		RunID        string    `json:"run_id"`
-		AssetID      string    `json:"asset_id"`
-		BlockHeight  uint64    `json:"block_height"`
-		BlockHash    string    `json:"block_hash"`
-		BlockTime    time.Time `json:"block_time"`
-		WalletCount  int       `json:"wallet_count"`
-		TotalBalance string    `json:"total_balance"`
+		RunID            string    `json:"run_id"`
+		AssetID          string    `json:"asset_id"`
+		BlockHeight      uint64    `json:"block_height"`
+		BlockHash        string    `json:"block_hash"`
+		BlockTime        time.Time `json:"block_time"`
+		WalletCount      int       `json:"wallet_count"`
+		TotalBalance     string    `json:"total_balance"`
+		LedgerAccountID  string    `json:"ledger_account_id"`
+		LedgerEntryCount int64     `json:"ledger_entry_count"`
+		LedgerBalance    string    `json:"ledger_balance"`
 	}{
 		RunID: snapshot.ID, AssetID: snapshot.Asset.ID,
 		BlockHeight: snapshot.Block.Height, BlockHash: snapshot.Block.Hash,
 		BlockTime: snapshot.Block.Timestamp, WalletCount: len(snapshot.Balances),
-		TotalBalance: snapshot.TotalBalance,
+		TotalBalance: snapshot.TotalBalance, LedgerAccountID: snapshot.Ledger.AccountID,
+		LedgerEntryCount: snapshot.Ledger.EntryCount, LedgerBalance: snapshot.Ledger.Balance,
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
 		return fmt.Errorf("输出钱包余额快照: %w", err)

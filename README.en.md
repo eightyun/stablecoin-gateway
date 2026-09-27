@@ -43,9 +43,10 @@ Implemented components:
 - Live Nile USDT validation covering deposit posting plus merchant-API-driven payout, signing, broadcast, finalized settlement, and safe expiry recovery
 - Separate available and frozen balance reporting
 - Repeatable-read reconciliation of ledger references, amounts, debit/credit direction, and account ownership, with deduplicated cases and audited resolution
-- Unified custody-wallet registration and per-wallet finalized TRC20 balance snapshots protected against finalized-head changes
+- Unified custody-wallet registration and finalized TRC20 wallet snapshots bound to stable ledger checkpoints
+- Custody asset reconciliation between on-chain totals and the ledger checkpoint captured with the same snapshot, with separate shortfall and excess cases
 
-Not yet implemented: automated address screening, wallet sweeping, full four-layer on-chain wallet reconciliation, monitoring and alerting, and a production KMS/HSM/MPC signing backend.
+Not yet implemented: automated address screening, wallet sweeping, complete four-layer reconciliation across chain, ledger, in-flight funds, and providers, monitoring and alerting, and a production KMS/HSM/MPC signing backend.
 
 ## Local Development
 
@@ -85,7 +86,7 @@ export GATEWAY_TRON_API_KEY='OPTIONAL_NODE_API_KEY'
 go run ./cmd/gateway-wallet-snapshot
 ```
 
-The migration backfills existing deposit addresses as `deposit` custody wallets, and new deposit addresses are registered atomically. This command only stores an immutable on-chain snapshot; it does not compare the ledger or adjust balances.
+The migration backfills existing deposit addresses as `deposit` custody wallets, and new deposit addresses are registered atomically. The command checks the custody-ledger checkpoint before and after chain reads and again while saving; it fails safely if the ledger changes or a payout is awaiting broadcast/finality. It never adjusts balances automatically.
 
 Register a hot, cold, or fee wallet that must be included in snapshots:
 
@@ -100,7 +101,7 @@ go run ./cmd/gateway-admin register-custody-wallet \
 
 Addresses are stored as normalized lowercase `41`-prefixed hex. The wallet and immutable registration audit commit in one transaction; the command cannot create `deposit` wallets.
 
-Run ledger and business-reference reconciliation, then list open cases:
+Run ledger-integrity, business-reference, and latest wallet-asset reconciliation, then list open cases:
 
 ```bash
 go run ./cmd/gateway-reconcile

@@ -38,10 +38,21 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	result, err := store.RunLedgerIntegrity(ctx)
-	if err != nil {
-		return err
+	runs := []func(context.Context) (reconciliation.RunResult, error){
+		store.RunLedgerIntegrity,
+		store.RunWalletAssets,
 	}
+	for _, runReconciliation := range runs {
+		result, runErr := runReconciliation(ctx)
+		if runErr != nil {
+			return runErr
+		}
+		logResult(result)
+	}
+	return nil
+}
+
+func logResult(result reconciliation.RunResult) {
 	log := slog.Info
 	if result.FindingCount > 0 {
 		log = slog.Warn
@@ -52,5 +63,4 @@ func run(ctx context.Context) error {
 		"checked_items", result.CheckedItems,
 		"finding_count", result.FindingCount,
 	)
-	return nil
 }
