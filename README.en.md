@@ -43,6 +43,7 @@ Implemented components:
 - Live Nile USDT validation covering deposit posting plus merchant-API-driven payout, signing, broadcast, finalized settlement, and safe expiry recovery
 - Separate available and frozen balance reporting
 - Repeatable-read reconciliation of ledger references, amounts, debit/credit direction, and account ownership, with deduplicated cases and audited resolution
+- Unified custody-wallet registration and per-wallet finalized TRC20 balance snapshots protected against finalized-head changes
 
 Not yet implemented: automated address screening, wallet sweeping, full four-layer on-chain wallet reconciliation, monitoring and alerting, and a production KMS/HSM/MPC signing backend.
 
@@ -73,6 +74,18 @@ Apply database migrations:
 export GATEWAY_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway?sslmode=disable'
 go run ./cmd/gateway-migrate up
 ```
+
+Capture finalized TRC20 balances for every registered active custody wallet of an asset:
+
+```bash
+export GATEWAY_WALLET_SNAPSHOT_ASSET_ID='usdt-tron-nile'
+export GATEWAY_PAYOUT_TRON_SOLIDITY_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_TRON_API_KEY='OPTIONAL_NODE_API_KEY'
+
+go run ./cmd/gateway-wallet-snapshot
+```
+
+The migration backfills existing deposit addresses as `deposit` custody wallets, and new deposit addresses are registered atomically. This command only stores an immutable on-chain snapshot; it does not compare the ledger or adjust balances.
 
 Run ledger and business-reference reconciliation, then list open cases:
 

@@ -43,6 +43,7 @@
 - Nile 真实 USDT 的充值入账，以及商户 API 驱动的出款、签名、广播、固化结算与安全过期恢复验证
 - 可用余额与冻结余额分离查询
 - 可重复读快照下的账本/业务引用与金额、借贷方向、账户归属对账，以及差异工单去重和关闭审计
+- 统一托管钱包登记，以及固化链头一致性保护的逐钱包 TRC20 余额快照
 
 尚未完成：自动地址筛查、归集、链上钱包余额四层对账、监控告警，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
 
@@ -73,6 +74,18 @@ curl http://127.0.0.1:8080/healthz
 export GATEWAY_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway?sslmode=disable'
 go run ./cmd/gateway-migrate up
 ```
+
+采集指定资产下全部已登记活动托管钱包的已固化 TRC20 余额快照：
+
+```bash
+export GATEWAY_WALLET_SNAPSHOT_ASSET_ID='usdt-tron-nile'
+export GATEWAY_PAYOUT_TRON_SOLIDITY_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_TRON_API_KEY='可选的节点API密钥'
+
+go run ./cmd/gateway-wallet-snapshot
+```
+
+迁移会把已有充值地址回填为 `deposit` 托管钱包，新充值地址也会原子登记。当前命令只保存不可变链上快照，不进行账本比较或自动调账。
 
 执行账本与业务引用对账，并查看未关闭工单：
 

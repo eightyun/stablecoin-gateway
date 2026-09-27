@@ -23,6 +23,14 @@ func TestStoreCreatesIntentAndMatchesExactPayment(t *testing.T) {
 	if err != nil || !created.Created {
 		t.Fatalf("RegisterAddress() = %+v, %v", created, err)
 	}
+	var walletRole, walletStatus string
+	if err := pool.QueryRow(ctx, `
+		SELECT role, status FROM custody_wallets
+		WHERE id = $1 AND asset_id = $2 AND address = $3
+	`, address.ID, address.AssetID, address.Address).Scan(&walletRole, &walletStatus); err != nil ||
+		walletRole != "deposit" || walletStatus != "active" {
+		t.Fatalf("充值托管钱包 role=%s status=%s error=%v", walletRole, walletStatus, err)
+	}
 	retryAddress := address
 	retryAddress.ID = randomUUID(t)
 	if result, err := store.RegisterAddress(ctx, retryAddress); err != nil || result.Created || result.ID != address.ID {
