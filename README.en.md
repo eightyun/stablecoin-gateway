@@ -40,6 +40,7 @@ Implemented components:
 - Atomic settlement on success and atomic fund release on safe failure or expiry
 - Read-only TRON testnet preflight and a mainnet broadcast safety switch that is off by default
 - Isolated Nile/Shasta testnet signer with contract/amount policy and durable replay protection
+- Live Nile USDT validation covering signing, broadcast, finalized scanning, deposit matching, and double-entry posting
 - Separate available and frozen balance reporting
 
 Not yet implemented: automated address screening, wallet sweeping, reconciliation, monitoring and alerting, and a production KMS/HSM/MPC signing backend.
@@ -189,7 +190,7 @@ export GATEWAY_TRON_API_KEY='injected-by-your-secrets-manager'
 go run ./cmd/gateway-payout-execution-worker
 ```
 
-This configuration provides the testnet signing, broadcast, and confirmation path. The repository has not yet completed end-to-end acceptance with a funded Nile wallet and real test assets. Production deployments should provide independent failover and monitoring for both node endpoints.
+This configuration provides the testnet signing, broadcast, and confirmation path. On 2026-09-27, a fresh Nile-only wallet completed two live test-asset checks: the first covered signer construction, signing, broadcast, and SolidityNode finalization; the second covered Indexer ingestion of a real Transfer, Deposit Worker intent matching, double-entry posting, and creation of the `deposit.confirmed` Outbox event. The transactions are [`e7f6ee9…aef39`](https://nile.tronscan.org/#/transaction/e7f6ee9ba5f10f119454d8df0a33b633ca6915a31f2847b82a1d5d25859aef39) and [`fa242e1b…cc82b`](https://nile.tronscan.org/#/transaction/fa242e1bdc988f926582b169944ddf6eeb64cac55c7e83e79d38e371385cc82b). This is functional testnet evidence rather than production acceptance; production deployments still need independent node failover and monitoring.
 
 Before configuring a wallet and remote signer, run the read-only Nile preflight, which holds no private key and writes nothing on-chain:
 
@@ -223,7 +224,7 @@ Only 2xx responses are successful. Delivery is at least once, so merchants must 
 
 ## Network Testing Gates
 
-- Nile node and asset preflight plus the isolated testnet signer are available. The next phase funds a dedicated wallet from a faucet and completes real deposit-and-payout end-to-end validation.
+- The minimum Nile loop now covers live signing, broadcast, finalized scanning, deposit matching, and ledger posting. The next phase completes the merchant-API-driven payout state machine, failure paths, and sustained testnet operation.
 - Mainnet canarying starts only after sustained testnet operation, three-way reconciliation, monitoring and alerting, disaster-recovery exercises, and an external security audit pass.
 - Mainnet is never a general test environment. Every mainnet canary requires a defined loss limit, dual approval, and an emergency stop.
 
