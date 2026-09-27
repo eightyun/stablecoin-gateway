@@ -42,8 +42,9 @@ Implemented components:
 - Isolated Nile/Shasta testnet signer with contract/amount policy and durable replay protection
 - Live Nile USDT validation covering deposit posting plus merchant-API-driven payout, signing, broadcast, finalized settlement, and safe expiry recovery
 - Separate available and frozen balance reporting
+- Repeatable-read ledger/business-reference reconciliation with deduplicated cases and audited resolution
 
-Not yet implemented: automated address screening, wallet sweeping, reconciliation, monitoring and alerting, and a production KMS/HSM/MPC signing backend.
+Not yet implemented: automated address screening, wallet sweeping, full four-layer on-chain wallet reconciliation, monitoring and alerting, and a production KMS/HSM/MPC signing backend.
 
 ## Local Development
 
@@ -71,6 +72,22 @@ Apply database migrations:
 ```bash
 export GATEWAY_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway?sslmode=disable'
 go run ./cmd/gateway-migrate up
+```
+
+Run ledger and business-reference reconciliation, then list open cases:
+
+```bash
+go run ./cmd/gateway-reconcile
+go run ./cmd/gateway-admin list-reconciliation-cases --limit 100
+```
+
+Reconciliation only detects discrepancies; it never changes ledger or business state automatically. After verification and manual remediation, resolve the case with audited operator details:
+
+```bash
+go run ./cmd/gateway-admin resolve-reconciliation-case \
+  --case-id '00000000-0000-0000-0000-000000000000' \
+  --actor 'ops@example.com' \
+  --reason 'verified and corrected'
 ```
 
 Create API credentials for an existing active merchant:

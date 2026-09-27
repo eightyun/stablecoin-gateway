@@ -42,8 +42,9 @@
 - 独立的 Nile/Shasta 测试网签名服务、合约/金额白名单与持久化防重复签名
 - Nile 真实 USDT 的充值入账，以及商户 API 驱动的出款、签名、广播、固化结算与安全过期恢复验证
 - 可用余额与冻结余额分离查询
+- 可重复读快照下的账本/业务引用对账、差异工单去重和关闭审计
 
-尚未完成：自动地址筛查、归集、对账、监控告警，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
+尚未完成：自动地址筛查、归集、链上钱包余额四层对账、监控告警，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
 
 ## 本地运行
 
@@ -71,6 +72,22 @@ curl http://127.0.0.1:8080/healthz
 ```bash
 export GATEWAY_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway?sslmode=disable'
 go run ./cmd/gateway-migrate up
+```
+
+执行账本与业务引用对账，并查看未关闭工单：
+
+```bash
+go run ./cmd/gateway-reconcile
+go run ./cmd/gateway-admin list-reconciliation-cases --limit 100
+```
+
+对账只发现差异，不会自动修改账本或业务状态。完成核实和人工处置后，通过带审计信息的命令关闭工单：
+
+```bash
+go run ./cmd/gateway-admin resolve-reconciliation-case \
+  --case-id '00000000-0000-0000-0000-000000000000' \
+  --actor 'ops@example.com' \
+  --reason 'verified and corrected'
 ```
 
 为数据库中已存在的活跃商户创建 API 凭证：

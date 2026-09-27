@@ -53,3 +53,22 @@ func TestParseReviewPayoutOptions(t *testing.T) {
 		t.Fatalf("invalid parseReviewPayoutOptions() error = %v", err)
 	}
 }
+
+func TestParseReconciliationOptions(t *testing.T) {
+	limit, err := parseListReconciliationCasesOptions([]string{"list-reconciliation-cases", "--limit", "25"})
+	if err != nil || limit != 25 {
+		t.Fatalf("parseListReconciliationCasesOptions() = %d, %v", limit, err)
+	}
+	options, err := parseResolveReconciliationCaseOptions([]string{
+		"resolve-reconciliation-case",
+		"--case-id", "123e4567-e89b-42d3-a456-426614174000",
+		"--actor", "ops@example.com",
+		"--reason", "verified and corrected",
+	})
+	if err != nil || options.actor != "ops@example.com" {
+		t.Fatalf("parseResolveReconciliationCaseOptions() = %+v, %v", options, err)
+	}
+	if _, err := parseListReconciliationCasesOptions([]string{"list-reconciliation-cases", "--limit", "0"}); !errors.Is(err, errUsage) {
+		t.Fatalf("invalid list options error = %v", err)
+	}
+}

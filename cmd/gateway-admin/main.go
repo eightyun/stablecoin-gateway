@@ -22,7 +22,7 @@ import (
 	"github.com/eightyun/stablecoin-gateway/internal/webhook"
 )
 
-var errUsage = errors.New("用法: gateway-admin create-api-key --merchant-id UUID --name NAME [--expires-at RFC3339] | create-webhook-endpoint --merchant-id UUID --name NAME --url HTTPS_URL | approve-payout --payout-id UUID --reviewer ID --reason TEXT | reject-payout --payout-id UUID --reviewer ID --reason TEXT")
+var errUsage = errors.New("用法: gateway-admin create-api-key --merchant-id UUID --name NAME [--expires-at RFC3339] | create-webhook-endpoint --merchant-id UUID --name NAME --url HTTPS_URL | approve-payout --payout-id UUID --reviewer ID --reason TEXT | reject-payout --payout-id UUID --reviewer ID --reason TEXT | list-reconciliation-cases [--limit 100] | resolve-reconciliation-case --case-id UUID --actor ID --reason TEXT")
 
 type createAPIKeyOptions struct {
 	merchantID string
@@ -58,6 +58,10 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		return runReviewPayout(ctx, args, output, payout.DecisionApprove)
 	case "reject-payout":
 		return runReviewPayout(ctx, args, output, payout.DecisionReject)
+	case "list-reconciliation-cases":
+		return runListReconciliationCases(ctx, args, output)
+	case "resolve-reconciliation-case":
+		return runResolveReconciliationCase(ctx, args, output)
 	default:
 		return errUsage
 	}
