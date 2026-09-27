@@ -129,6 +129,8 @@ go run ./cmd/gateway-admin reject-payout \
 
 创建充值时必须传 `Idempotency-Key`。金额使用资产最小单位的十进制整数字符串，例如 1 USDT（6 位精度）传 `"1000000"`。
 
+商户 API 对外返回的 TRON 充值地址、出款地址和合约地址统一为 Base58Check，创建出款也只接受 Base58Check 目的地址。链日志、数据库及 `GATEWAY_TRON_CONTRACT` 使用小写 `41` 前缀十六进制规范值，在 HTTP 边界完成转换，避免内部比较出现同一地址的两种文本表示。
+
 每个商户请求必须携带：
 
 - `X-Gateway-Key`

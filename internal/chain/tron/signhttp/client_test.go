@@ -18,7 +18,9 @@ import (
 const (
 	testRequestID    = "123e4567-e89b-42d3-a456-426614174000"
 	testAddress      = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb"
+	testAddressHex   = "410000000000000000000000000000000000000000"
 	testContract     = "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf"
+	testContractHex  = "41eca9bc828a3005b9a3b909f2cc5c2a54794de05f"
 	testOtherAddress = "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj"
 )
 
@@ -33,7 +35,7 @@ func TestClientSignsTransferOverHTTPS(t *testing.T) {
 		}
 		var body map[string]string
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body["amount"] != "1000000" ||
-			body["destination_address"] != testAddress {
+			body["destination_address"] != testAddressHex || body["contract_address"] != testContractHex {
 			t.Fatalf("请求体 = %+v, %v", body, err)
 		}
 		writer.Header().Set("Content-Type", "application/json")

@@ -92,6 +92,13 @@ func (store *Store) Create(ctx context.Context, request Request) (result CreateR
 	if err != nil {
 		return CreateResult{}, err
 	}
+	if _, err = tron.NormalizeAddress(request.DestinationAddress); err != nil {
+		return CreateResult{}, ErrInvalidRequest
+	}
+	request.DestinationAddress, err = tron.NormalizeAddressHex(request.DestinationAddress)
+	if err != nil {
+		return CreateResult{}, ErrInvalidRequest
+	}
 	requestHash, err := requestFingerprint(request)
 	if err != nil {
 		return CreateResult{}, err
@@ -146,9 +153,6 @@ func (store *Store) Create(ctx context.Context, request Request) (result CreateR
 	}
 	if !strings.HasPrefix(strings.ToLower(details.Network), "tron") {
 		return CreateResult{}, ErrUnsupportedNetwork
-	}
-	if _, err := tron.NormalizeAddress(request.DestinationAddress); err != nil {
-		return CreateResult{}, ErrInvalidRequest
 	}
 
 	var availableAccountID, frozenAccountID string

@@ -115,11 +115,16 @@ func (handler *merchantHandler) createDeposit(writer stdhttp.ResponseWriter, req
 		writeDepositError(writer, err)
 		return
 	}
+	intent, err := presentDepositIntent(result.Intent)
+	if err != nil {
+		writeInternalError(writer, err)
+		return
+	}
 	status := stdhttp.StatusOK
 	if result.Created {
 		status = stdhttp.StatusCreated
 	}
-	writeJSON(writer, status, map[string]any{"data": result.Intent})
+	writeJSON(writer, status, map[string]any{"data": intent})
 }
 
 func (handler *merchantHandler) getDeposit(writer stdhttp.ResponseWriter, request *stdhttp.Request) {
@@ -141,6 +146,11 @@ func (handler *merchantHandler) getDeposit(writer stdhttp.ResponseWriter, reques
 		writeDepositError(writer, err)
 		return
 	}
+	result, err = presentDepositIntent(result)
+	if err != nil {
+		writeInternalError(writer, err)
+		return
+	}
 	writeJSON(writer, stdhttp.StatusOK, map[string]any{"data": result})
 }
 
@@ -154,6 +164,11 @@ func (handler *merchantHandler) listBalances(writer stdhttp.ResponseWriter, requ
 		return
 	}
 	balances, err := handler.deposits.ListBalances(request.Context(), principal.MerchantID)
+	if err != nil {
+		writeInternalError(writer, err)
+		return
+	}
+	balances, err = presentBalances(balances)
 	if err != nil {
 		writeInternalError(writer, err)
 		return
@@ -191,11 +206,16 @@ func (handler *merchantHandler) createPayout(writer stdhttp.ResponseWriter, requ
 		writePayoutError(writer, err)
 		return
 	}
+	payoutDetails, err := presentPayout(result.Payout)
+	if err != nil {
+		writeInternalError(writer, err)
+		return
+	}
 	status := stdhttp.StatusOK
 	if result.Created {
 		status = stdhttp.StatusCreated
 	}
-	writeJSON(writer, status, map[string]any{"data": result.Payout})
+	writeJSON(writer, status, map[string]any{"data": payoutDetails})
 }
 
 func (handler *merchantHandler) getPayout(writer stdhttp.ResponseWriter, request *stdhttp.Request) {
@@ -215,6 +235,11 @@ func (handler *merchantHandler) getPayout(writer stdhttp.ResponseWriter, request
 	result, err := handler.payouts.Get(request.Context(), principal.MerchantID, payoutID)
 	if err != nil {
 		writePayoutError(writer, err)
+		return
+	}
+	result, err = presentPayout(result)
+	if err != nil {
+		writeInternalError(writer, err)
 		return
 	}
 	writeJSON(writer, stdhttp.StatusOK, map[string]any{"data": result})

@@ -47,7 +47,7 @@ func TestMerchantAPIEndToEnd(t *testing.T) {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO assets (id, network, contract_address, symbol, decimals, status)
 		VALUES ($1, $2, $3, 'USDT', 6, 'active')
-	`, assetID, "tron-"+mustToken(t, 16), "41"+mustToken(t, 20)); err != nil {
+	`, assetID, "tron-"+mustToken(t, 16), presentationHexZero); err != nil {
 		t.Fatalf("创建测试资产: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -67,7 +67,7 @@ func TestMerchantAPIEndToEnd(t *testing.T) {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO deposit_addresses (id, merchant_id, asset_id, address, status)
 		VALUES ($1, $2, $3, $4, 'active')
-	`, addressID, merchantID, assetID, "41"+mustToken(t, 20)); err != nil {
+	`, addressID, merchantID, assetID, presentationHexAddress); err != nil {
 		t.Fatalf("创建测试充值地址: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -126,7 +126,8 @@ func TestMerchantAPIEndToEnd(t *testing.T) {
 	var created struct {
 		Data deposit.IntentDetails `json:"data"`
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil || created.Data.ID == "" || created.Data.DepositAddress == "" {
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil || created.Data.ID == "" ||
+		created.Data.DepositAddress != presentationBase58 || created.Data.ContractAddress != presentationBase58Zero {
 		t.Fatalf("解析创建响应: %+v, %v", created, err)
 	}
 
@@ -150,12 +151,21 @@ func TestMerchantAPIEndToEnd(t *testing.T) {
 	var createdPayout struct {
 		Data payout.Details `json:"data"`
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &createdPayout); err != nil || createdPayout.Data.ID == "" || createdPayout.Data.Status != "pending_review" {
+	if err := json.Unmarshal(response.Body.Bytes(), &createdPayout); err != nil || createdPayout.Data.ID == "" ||
+		createdPayout.Data.Status != "pending_review" || createdPayout.Data.ContractAddress != presentationBase58Zero ||
+		createdPayout.Data.DestinationAddress != presentationBase58Zero {
 		t.Fatalf("解析出款响应: %+v, %v", createdPayout, err)
 	}
 	response = serveSigned(t, handler, credentials, http.MethodGet, "/v1/payouts/"+createdPayout.Data.ID, nil, "")
 	if response.Code != http.StatusOK {
 		t.Fatalf("查询出款 response=%d body=%q", response.Code, response.Body.String())
+	}
+	var queriedPayout struct {
+		Data payout.Details `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &queriedPayout); err != nil ||
+		queriedPayout.Data.DestinationAddress != presentationBase58Zero {
+		t.Fatalf("解析查询出款响应: %+v, %v", queriedPayout, err)
 	}
 }
 

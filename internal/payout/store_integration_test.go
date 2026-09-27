@@ -23,7 +23,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const testDestination = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb"
+const (
+	testDestination    = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb"
+	testDestinationHex = "410000000000000000000000000000000000000000"
+)
 
 type payoutFixture struct {
 	store              *Store
@@ -242,7 +245,7 @@ func TestStoreSigningLeaseTakeoverAndCompletion(t *testing.T) {
 	}
 	first, err := fixture.store.ClaimSigning(context.Background(), "signer-1", time.Minute)
 	if err != nil || first.PayoutID != created.Payout.ID || first.LeaseEpoch != 1 ||
-		first.Amount != "60" || first.DestinationAddress != testDestination {
+		first.Amount != "60" || first.DestinationAddress != testDestinationHex {
 		t.Fatalf("第一次 ClaimSigning() = %+v, %v", first, err)
 	}
 	if _, err := fixture.store.ClaimSigning(context.Background(), "signer-2", time.Minute); !errors.Is(err, ErrNoSigningJob) {

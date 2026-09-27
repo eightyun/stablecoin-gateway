@@ -129,6 +129,8 @@ Available endpoints:
 
 Deposit creation requires `Idempotency-Key`. Amounts are decimal integer strings in the asset's smallest unit. For example, 1 USDT with 6 decimals is `"1000000"`.
 
+Merchant API responses expose TRON deposit, payout, and contract addresses as Base58Check, and payout creation accepts only a Base58Check destination. Chain logs, database records, and `GATEWAY_TRON_CONTRACT` use canonical lowercase `41`-prefixed hexadecimal values; conversion happens only at the HTTP boundary so internal comparisons never mix two textual forms of the same address.
+
 Every merchant request requires:
 
 - `X-Gateway-Key`

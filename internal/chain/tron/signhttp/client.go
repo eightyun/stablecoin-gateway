@@ -104,6 +104,15 @@ func (client *Client) SignTransfer(
 	if err := validateRequest(request); err != nil {
 		return tron.SignedTransaction{}, err
 	}
+	var err error
+	request.ContractAddress, err = tron.NormalizeAddressHex(request.ContractAddress)
+	if err != nil {
+		return tron.SignedTransaction{}, ErrInvalidRequest
+	}
+	request.DestinationAddress, err = tron.NormalizeAddressHex(request.DestinationAddress)
+	if err != nil {
+		return tron.SignedTransaction{}, ErrInvalidRequest
+	}
 	body, err := json.Marshal(struct {
 		RequestID          string `json:"request_id"`
 		Network            string `json:"network"`
@@ -196,7 +205,7 @@ func validateRequest(request tron.TransferSignRequest) error {
 		len(request.Amount) > 19 || request.Amount[0] == '0' {
 		return ErrInvalidRequest
 	}
-	if _, err := tron.NormalizeAddress(request.DestinationAddress); err != nil {
+	if _, err := tron.NormalizeAddressHex(request.DestinationAddress); err != nil {
 		return ErrInvalidRequest
 	}
 	if _, err := tron.NormalizeAddressHex(request.ContractAddress); err != nil {
