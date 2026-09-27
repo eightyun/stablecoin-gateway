@@ -22,6 +22,7 @@ type WorkerConfig struct {
 	IdleInterval time.Duration
 	RetryMin     time.Duration
 	RetryMax     time.Duration
+	Observer     background.Observer
 }
 
 // Worker 持续驱动扫描器追赶已固化链头。
@@ -48,6 +49,7 @@ func NewWorker(stepper Stepper, logger *slog.Logger, config WorkerConfig) (*Work
 		IdleInterval:     config.IdleInterval,
 		RetryMin:         config.RetryMin,
 		RetryMax:         config.RetryMax,
+		Observer:         config.Observer,
 	}, classifyWorkerError)
 	if err != nil {
 		return nil, ErrInvalidWorker

@@ -32,6 +32,7 @@ type ExecutionWorkerConfig struct {
 	IdleInterval         time.Duration
 	RetryMin             time.Duration
 	RetryMax             time.Duration
+	Observer             background.Observer
 }
 
 // ExecutionWorker 广播原始签名交易并等待 SolidityNode 固化终态。
@@ -63,6 +64,7 @@ func NewExecutionWorker(
 	runner, err := background.NewRunner(operation, logger, background.Config{
 		Name: "payout-execution", OperationTimeout: config.OperationTimeout,
 		IdleInterval: config.IdleInterval, RetryMin: config.RetryMin, RetryMax: config.RetryMax,
+		Observer: config.Observer,
 	}, func(err error) background.Decision {
 		if errors.Is(err, tron.ErrInvalidSignedTransaction) || errors.Is(err, ErrInvalidExecutionClaim) {
 			return background.Stop

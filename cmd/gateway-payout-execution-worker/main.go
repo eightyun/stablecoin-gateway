@@ -10,6 +10,7 @@ import (
 	"github.com/eightyun/stablecoin-gateway/internal/chain/tron/nodehttp"
 	"github.com/eightyun/stablecoin-gateway/internal/config"
 	"github.com/eightyun/stablecoin-gateway/internal/database"
+	"github.com/eightyun/stablecoin-gateway/internal/observability"
 	"github.com/eightyun/stablecoin-gateway/internal/payout"
 )
 
@@ -27,6 +28,10 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	monitoringConfig, err := config.LoadObservability()
+	if err != nil {
+		return err
+	}
 	databaseConfig := database.DefaultConfig(cfg.DatabaseURL, "gateway-payout-execution-worker")
 	databaseConfig.MinConnections = 1
 	databaseConfig.MaxConnections = 5
@@ -35,6 +40,13 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer pool.Close()
+	monitoring, err := observability.New(observability.Config{
+		Addr: monitoringConfig.Addr, ReadHeaderTimeout: monitoringConfig.ReadHeaderTimeout,
+		ReadinessTimeout: monitoringConfig.ReadinessTimeout, ShutdownTimeout: monitoringConfig.ShutdownTimeout,
+	}, pool)
+	if err != nil {
+		return err
+	}
 	store, err := payout.NewStore(pool)
 	if err != nil {
 		return err
@@ -57,10 +69,12 @@ func run(ctx context.Context) error {
 		OperationTimeout: cfg.OperationTimeout, LeaseDuration: cfg.LeaseDuration,
 		ConfirmationInterval: cfg.ConfirmationInterval, IdleInterval: cfg.IdleInterval,
 		RetryMin: cfg.RetryMin, RetryMax: cfg.RetryMax,
+		Observer: monitoring.WorkerObserver(),
 	})
 	if err != nil {
 		return err
 	}
-	slog.Info("出款执行进程已启动", "worker_id", cfg.WorkerID, "network", cfg.Network)
-	return worker.Run(ctx)
+	slog.Info("出款执行进程已启动", "worker_id", cfg.WorkerID, "network", cfg.Network,
+		"observability_addr", monitoringConfig.Addr)
+	return monitoring.Run(ctx, worker.Run)
 }

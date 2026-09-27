@@ -45,8 +45,9 @@
 - 可重复读快照下的账本/业务引用与金额、借贷方向、账户归属对账，以及差异工单去重和关闭审计
 - 统一托管钱包登记，以及绑定稳定账本检查点的固化 TRC20 钱包余额快照
 - 链上托管总余额与同次账本检查点的资产对账，区分短款和长款并生成可审计工单
+- 长运行资金 Worker 的 Prometheus 指标、存活探针和 PostgreSQL 就绪探针
 
-尚未完成：自动地址筛查、归集、包含链上/账本/在途/通道的完整四层对账、监控告警，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
+尚未完成：自动地址筛查、归集、包含链上/账本/在途/通道的完整四层对账、告警规则和仪表盘，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
 
 ## 本地运行
 
@@ -144,6 +145,23 @@ go run ./cmd/gateway-webhook-worker
 ```
 
 Worker 默认拒绝私网、回环和链路本地目标，且不跟随重定向。仅在明确需要投递到可信内网时设置 `GATEWAY_WEBHOOK_ALLOW_PRIVATE_NETWORKS=true`。
+
+## Worker 监控
+
+Indexer、充值匹配、出款签名、出款执行和 Webhook Worker 默认在 `127.0.0.1:9090` 暴露：
+
+- `GET /healthz`：进程存活探针
+- `GET /readyz`：带超时的 PostgreSQL 就绪探针
+- `GET /metrics`：Prometheus 指标，包括执行结果、耗时、连续失败、最后成功时间和运行状态
+
+```bash
+export GATEWAY_OBSERVABILITY_ADDR='127.0.0.1:9090'
+curl http://127.0.0.1:9090/healthz
+curl http://127.0.0.1:9090/readyz
+curl http://127.0.0.1:9090/metrics
+```
+
+多个 Worker 在同一主机直接运行时必须分配不同端口。容器或 Kubernetes 可复用容器内端口；如果监听非回环地址，应通过网络策略限制指标端口访问。本阶段只提供可靠指标出口，不包含 Prometheus/Alertmanager 部署和告警规则。
 
 审批或拒绝待审核出款：
 

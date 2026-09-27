@@ -11,6 +11,7 @@ import (
 	"github.com/eightyun/stablecoin-gateway/internal/chain/tron/nodehttp"
 	"github.com/eightyun/stablecoin-gateway/internal/config"
 	"github.com/eightyun/stablecoin-gateway/internal/database"
+	"github.com/eightyun/stablecoin-gateway/internal/observability"
 )
 
 func main() {
@@ -24,6 +25,10 @@ func main() {
 
 func run(ctx context.Context) error {
 	cfg, err := config.LoadIndexer()
+	if err != nil {
+		return err
+	}
+	monitoringConfig, err := config.LoadObservability()
 	if err != nil {
 		return err
 	}
@@ -44,6 +49,13 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer pool.Close()
+	monitoring, err := observability.New(observability.Config{
+		Addr: monitoringConfig.Addr, ReadHeaderTimeout: monitoringConfig.ReadHeaderTimeout,
+		ReadinessTimeout: monitoringConfig.ReadinessTimeout, ShutdownTimeout: monitoringConfig.ShutdownTimeout,
+	}, pool)
+	if err != nil {
+		return err
+	}
 
 	store, err := indexer.NewCursorStore(pool)
 	if err != nil {
@@ -58,6 +70,7 @@ func run(ctx context.Context) error {
 		IdleInterval: cfg.IdleInterval,
 		RetryMin:     cfg.RetryMin,
 		RetryMax:     cfg.RetryMax,
+		Observer:     monitoring.WorkerObserver(),
 	})
 	if err != nil {
 		return err
@@ -65,6 +78,7 @@ func run(ctx context.Context) error {
 	if err := store.Ensure(ctx, cfg.Network, cfg.StartHeight, cfg.AnchorHash); err != nil {
 		return err
 	}
-	slog.Info("TRON 扫描进程已启动", "network", cfg.Network, "contract", cfg.Contract, "worker", cfg.WorkerID)
-	return worker.Run(ctx)
+	slog.Info("TRON 扫描进程已启动", "network", cfg.Network, "contract", cfg.Contract,
+		"worker", cfg.WorkerID, "observability_addr", monitoringConfig.Addr)
+	return monitoring.Run(ctx, worker.Run)
 }

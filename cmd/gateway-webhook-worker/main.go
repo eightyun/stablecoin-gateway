@@ -10,6 +10,7 @@ import (
 	"github.com/eightyun/stablecoin-gateway/internal/background"
 	"github.com/eightyun/stablecoin-gateway/internal/config"
 	"github.com/eightyun/stablecoin-gateway/internal/database"
+	"github.com/eightyun/stablecoin-gateway/internal/observability"
 	"github.com/eightyun/stablecoin-gateway/internal/outbox"
 	"github.com/eightyun/stablecoin-gateway/internal/payout"
 	"github.com/eightyun/stablecoin-gateway/internal/secretbox"
@@ -30,6 +31,10 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	monitoringConfig, err := config.LoadObservability()
+	if err != nil {
+		return err
+	}
 	databaseConfig := database.DefaultConfig(cfg.DatabaseURL, "gateway-webhook-worker")
 	databaseConfig.MinConnections = 1
 	databaseConfig.MaxConnections = 5
@@ -38,6 +43,13 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer pool.Close()
+	monitoring, err := observability.New(observability.Config{
+		Addr: monitoringConfig.Addr, ReadHeaderTimeout: monitoringConfig.ReadHeaderTimeout,
+		ReadinessTimeout: monitoringConfig.ReadinessTimeout, ShutdownTimeout: monitoringConfig.ShutdownTimeout,
+	}, pool)
+	if err != nil {
+		return err
+	}
 	keyring, err := secretbox.NewKeyring(cfg.EncryptionKeys, cfg.ActiveKeyVersion)
 	if err != nil {
 		return err
@@ -80,10 +92,12 @@ func run(ctx context.Context) error {
 	runner, err := background.NewRunner(operation, slog.Default(), background.Config{
 		Name: "webhook-delivery", OperationTimeout: cfg.OperationTimeout,
 		IdleInterval: cfg.IdleInterval, RetryMin: cfg.RetryMin, RetryMax: cfg.RetryMax,
+		Observer: monitoring.WorkerObserver(),
 	}, nil)
 	if err != nil {
 		return err
 	}
-	slog.Info("Webhook Worker 已启动", "worker_id", cfg.WorkerID)
-	return runner.Run(ctx)
+	slog.Info("Webhook Worker 已启动", "worker_id", cfg.WorkerID,
+		"observability_addr", monitoringConfig.Addr)
+	return monitoring.Run(ctx, runner.Run)
 }

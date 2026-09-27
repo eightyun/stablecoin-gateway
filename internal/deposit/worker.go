@@ -26,6 +26,7 @@ type WorkerConfig struct {
 	RetryMax         time.Duration
 	ExpireInterval   time.Duration
 	ExpireBatchSize  int
+	Observer         background.Observer
 }
 
 // Worker 持续匹配充值事件并关闭到期意图。
@@ -50,6 +51,7 @@ func NewWorker(matcher Matcher, logger *slog.Logger, config WorkerConfig) (*Work
 		IdleInterval:     config.IdleInterval,
 		RetryMin:         config.RetryMin,
 		RetryMax:         config.RetryMax,
+		Observer:         config.Observer,
 	}, func(err error) background.Decision {
 		if errors.Is(err, ErrInvalidLimit) || errors.Is(err, ledger.ErrIdempotencyConflict) {
 			return background.Stop

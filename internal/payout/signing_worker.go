@@ -28,6 +28,7 @@ type SigningWorkerConfig struct {
 	IdleInterval     time.Duration
 	RetryMin         time.Duration
 	RetryMax         time.Duration
+	Observer         background.Observer
 }
 
 // SigningWorker 从数据库队列领取任务，但不持有任何私钥。
@@ -56,6 +57,7 @@ func NewSigningWorker(
 	runner, err := background.NewRunner(operation, logger, background.Config{
 		Name: "payout-signing", OperationTimeout: config.OperationTimeout,
 		IdleInterval: config.IdleInterval, RetryMin: config.RetryMin, RetryMax: config.RetryMax,
+		Observer: config.Observer,
 	}, func(err error) background.Decision {
 		if errors.Is(err, ErrInvalidSigningClaim) || errors.Is(err, ErrInvalidSignedTransaction) ||
 			errors.Is(err, ErrSignedTransactionConflict) {

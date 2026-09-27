@@ -38,6 +38,14 @@ func (operation OperationFunc) RunOnce(ctx context.Context) (bool, error) {
 // Classifier 判断任务错误是否应重试、空闲等待或终止进程。
 type Classifier func(error) Decision
 
+// Observer 接收低基数的后台任务生命周期和执行结果，供指标实现使用。
+type Observer interface {
+	Started(name string)
+	Succeeded(name string, worked bool, duration time.Duration)
+	Failed(name string, decision Decision, duration time.Duration)
+	Stopped(name string)
+}
+
 // Config 控制任务超时、空闲间隔和错误退避。
 type Config struct {
 	Name             string
@@ -45,6 +53,7 @@ type Config struct {
 	IdleInterval     time.Duration
 	RetryMin         time.Duration
 	RetryMax         time.Duration
+	Observer         Observer
 }
 
 // Runner 持续运行单步后台任务。
@@ -67,18 +76,27 @@ func NewRunner(operation Operation, logger *slog.Logger, config Config, classifi
 
 // Run 持续运行任务，直到上下文取消或分类器要求停止。
 func (runner *Runner) Run(ctx context.Context) error {
+	if runner.config.Observer != nil {
+		runner.config.Observer.Started(runner.config.Name)
+		defer runner.config.Observer.Stopped(runner.config.Name)
+	}
 	retryDelay := runner.config.RetryMin
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
 		operationCtx, cancel := context.WithTimeout(ctx, runner.config.OperationTimeout)
+		startedAt := time.Now()
 		worked, err := runner.operation.RunOnce(operationCtx)
+		duration := time.Since(startedAt)
 		cancel()
 		if ctx.Err() != nil {
 			return nil
 		}
 		if err == nil {
+			if runner.config.Observer != nil {
+				runner.config.Observer.Succeeded(runner.config.Name, worked, duration)
+			}
 			retryDelay = runner.config.RetryMin
 			if worked {
 				continue
@@ -89,7 +107,11 @@ func (runner *Runner) Run(ctx context.Context) error {
 			continue
 		}
 
-		switch runner.classify(err) {
+		decision := runner.classify(err)
+		if runner.config.Observer != nil {
+			runner.config.Observer.Failed(runner.config.Name, decision, duration)
+		}
+		switch decision {
 		case Stop:
 			return fmt.Errorf("后台任务 %s 停止: %w", runner.config.Name, err)
 		case Idle:

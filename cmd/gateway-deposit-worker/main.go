@@ -10,6 +10,7 @@ import (
 	"github.com/eightyun/stablecoin-gateway/internal/config"
 	"github.com/eightyun/stablecoin-gateway/internal/database"
 	"github.com/eightyun/stablecoin-gateway/internal/deposit"
+	"github.com/eightyun/stablecoin-gateway/internal/observability"
 )
 
 func main() {
@@ -26,6 +27,10 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	monitoringConfig, err := config.LoadObservability()
+	if err != nil {
+		return err
+	}
 	databaseConfig := database.DefaultConfig(cfg.DatabaseURL, "gateway-deposit-worker")
 	databaseConfig.MinConnections = 1
 	databaseConfig.MaxConnections = 5
@@ -34,6 +39,13 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer pool.Close()
+	monitoring, err := observability.New(observability.Config{
+		Addr: monitoringConfig.Addr, ReadHeaderTimeout: monitoringConfig.ReadHeaderTimeout,
+		ReadinessTimeout: monitoringConfig.ReadinessTimeout, ShutdownTimeout: monitoringConfig.ShutdownTimeout,
+	}, pool)
+	if err != nil {
+		return err
+	}
 
 	store, err := deposit.NewStore(pool)
 	if err != nil {
@@ -46,10 +58,11 @@ func run(ctx context.Context) error {
 		RetryMax:         cfg.RetryMax,
 		ExpireInterval:   cfg.ExpireInterval,
 		ExpireBatchSize:  cfg.ExpireBatchSize,
+		Observer:         monitoring.WorkerObserver(),
 	})
 	if err != nil {
 		return err
 	}
-	slog.Info("充值匹配进程已启动")
-	return worker.Run(ctx)
+	slog.Info("充值匹配进程已启动", "observability_addr", monitoringConfig.Addr)
+	return monitoring.Run(ctx, worker.Run)
 }

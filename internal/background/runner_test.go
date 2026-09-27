@@ -77,6 +77,37 @@ func TestNewRunnerRejectsInvalidConfiguration(t *testing.T) {
 	}
 }
 
+func TestRunnerReportsLifecycleAndResults(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	observer := &observerStub{}
+	calls := 0
+	runner, err := NewRunner(OperationFunc(func(context.Context) (bool, error) {
+		calls++
+		switch calls {
+		case 1:
+			return true, nil
+		case 2:
+			return false, errors.New("暂时失败")
+		default:
+			cancel()
+			return false, nil
+		}
+	}), discardLogger(), Config{
+		Name: "observed", OperationTimeout: time.Second, IdleInterval: time.Millisecond,
+		RetryMin: time.Millisecond, RetryMax: time.Millisecond, Observer: observer,
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+	if err := runner.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if observer.started != 1 || observer.stopped != 1 || observer.worked != 1 ||
+		observer.idle != 0 || observer.failed != 1 || observer.lastDecision != Retry {
+		t.Fatalf("observer = %+v", observer)
+	}
+}
+
 func TestRetryHelpers(t *testing.T) {
 	if got := nextRetry(4*time.Second, 5*time.Second); got != 5*time.Second {
 		t.Fatalf("nextRetry() = %v", got)
@@ -104,3 +135,29 @@ func newTestRunner(t *testing.T, operation Operation, classifier Classifier) *Ru
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
+
+type observerStub struct {
+	started      int
+	stopped      int
+	worked       int
+	idle         int
+	failed       int
+	lastDecision Decision
+}
+
+func (observer *observerStub) Started(string) { observer.started++ }
+
+func (observer *observerStub) Succeeded(_ string, worked bool, _ time.Duration) {
+	if worked {
+		observer.worked++
+		return
+	}
+	observer.idle++
+}
+
+func (observer *observerStub) Failed(_ string, decision Decision, _ time.Duration) {
+	observer.failed++
+	observer.lastDecision = decision
+}
+
+func (observer *observerStub) Stopped(string) { observer.stopped++ }

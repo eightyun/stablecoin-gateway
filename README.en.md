@@ -45,8 +45,9 @@ Implemented components:
 - Repeatable-read reconciliation of ledger references, amounts, debit/credit direction, and account ownership, with deduplicated cases and audited resolution
 - Unified custody-wallet registration and finalized TRC20 wallet snapshots bound to stable ledger checkpoints
 - Custody asset reconciliation between on-chain totals and the ledger checkpoint captured with the same snapshot, with separate shortfall and excess cases
+- Prometheus metrics, liveness probes, and PostgreSQL readiness probes for long-running fund workers
 
-Not yet implemented: automated address screening, wallet sweeping, complete four-layer reconciliation across chain, ledger, in-flight funds, and providers, monitoring and alerting, and a production KMS/HSM/MPC signing backend.
+Not yet implemented: automated address screening, wallet sweeping, complete four-layer reconciliation across chain, ledger, in-flight funds, and providers, alert rules and dashboards, and a production KMS/HSM/MPC signing backend.
 
 ## Local Development
 
@@ -144,6 +145,23 @@ go run ./cmd/gateway-webhook-worker
 ```
 
 The worker rejects private, loopback, and link-local targets and does not follow redirects by default. Set `GATEWAY_WEBHOOK_ALLOW_PRIVATE_NETWORKS=true` only when delivering to a trusted internal network is intentional.
+
+## Worker Monitoring
+
+The indexer, deposit matcher, payout signer, payout executor, and webhook worker expose these endpoints on `127.0.0.1:9090` by default:
+
+- `GET /healthz`: process liveness
+- `GET /readyz`: timeout-bounded PostgreSQL readiness
+- `GET /metrics`: Prometheus operation results, duration, consecutive failures, last-success time, and running state
+
+```bash
+export GATEWAY_OBSERVABILITY_ADDR='127.0.0.1:9090'
+curl http://127.0.0.1:9090/healthz
+curl http://127.0.0.1:9090/readyz
+curl http://127.0.0.1:9090/metrics
+```
+
+Assign a different port to each worker when several run directly on the same host. Containers or Kubernetes may reuse the container-local port. If binding beyond loopback, restrict the metrics port with network policy. This phase provides a reliable metrics endpoint; Prometheus/Alertmanager deployment and alert rules remain separate work.
 
 Approve or reject a pending payout:
 
