@@ -46,8 +46,9 @@
 - 统一托管钱包登记，以及绑定稳定账本检查点的固化 TRC20 钱包余额快照
 - 链上托管总余额与同次账本检查点的资产对账，区分短款和长款并生成可审计工单
 - 长运行资金 Worker 的 Prometheus 指标、存活探针和 PostgreSQL 就绪探针
+- 独立业务风险监控进程，以及覆盖对账差异、出款积压、Outbox 死信、索引停滞和任务过期的 Prometheus 告警规则
 
-尚未完成：自动地址筛查、归集、包含链上/账本/在途/通道的完整四层对账、告警规则和仪表盘，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
+尚未完成：自动地址筛查、归集、包含链上/账本/在途/通道的完整四层对账、监控仪表盘，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
 
 ## 本地运行
 
@@ -146,7 +147,7 @@ go run ./cmd/gateway-webhook-worker
 
 Worker 默认拒绝私网、回环和链路本地目标，且不跟随重定向。仅在明确需要投递到可信内网时设置 `GATEWAY_WEBHOOK_ALLOW_PRIVATE_NETWORKS=true`。
 
-## Worker 监控
+## 监控与告警
 
 Indexer、充值匹配、出款签名、出款执行和 Webhook Worker 默认在 `127.0.0.1:9090` 暴露：
 
@@ -161,7 +162,20 @@ curl http://127.0.0.1:9090/readyz
 curl http://127.0.0.1:9090/metrics
 ```
 
-多个 Worker 在同一主机直接运行时必须分配不同端口。容器或 Kubernetes 可复用容器内端口；如果监听非回环地址，应通过网络策略限制指标端口访问。本阶段只提供可靠指标出口，不包含 Prometheus/Alertmanager 部署和告警规则。
+多个 Worker 在同一主机直接运行时必须分配不同端口。容器或 Kubernetes 可复用容器内端口；如果监听非回环地址，应通过网络策略限制指标端口访问。仓库提供告警规则，但不负责部署 Prometheus 或 Alertmanager。
+
+独立启动只读业务风险监控进程：
+
+```bash
+export GATEWAY_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway?sslmode=disable'
+export GATEWAY_OBSERVABILITY_ADDR='127.0.0.1:9096'
+export GATEWAY_MONITOR_REFRESH_INTERVAL='15s'
+go run ./cmd/gateway-monitor
+```
+
+该进程在 PostgreSQL 可重复读事务内周期采集快照，Prometheus 抓取只读取内存 Gauge，不会按抓取频率查询数据库。它暴露未关闭对账工单、出款状态与最早创建时间、Outbox 积压与死信、索引游标活动、最近对账和钱包快照时间。指标只用于监控，不会自动改账或改变业务状态。
+
+可直接加载 [`configs/prometheus/alerts.yml`](configs/prometheus/alerts.yml)；其中进程存活规则约定 Prometheus job 名为 `stablecoin-gateway-monitor`。出款等待、索引停滞、日终对账和钱包快照阈值是安全起点，上线前必须按节点固化速度、任务调度频率和业务 SLA 调整。当前索引告警检测游标是否停止活动，精确的链头高度差将在接入节点级监控后补充。
 
 审批或拒绝待审核出款：
 

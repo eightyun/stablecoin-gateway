@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func TestServiceHealthReadinessAndMetrics(t *testing.T) {
@@ -77,6 +79,23 @@ func TestNewRejectsInvalidConfiguration(t *testing.T) {
 	service := newTestService(t, &readinessStub{})
 	if err := service.Run(context.Background(), nil); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("Run() error = %v", err)
+	}
+}
+
+func TestServiceRegistersCustomCollector(t *testing.T) {
+	service := newTestService(t, &readinessStub{})
+	custom := prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_test_custom_metric"})
+	custom.Set(7)
+	if err := service.Register(custom); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if err := service.Register(custom); err == nil {
+		t.Fatal("Register() 未拒绝重复 Collector")
+	}
+	response := httptest.NewRecorder()
+	service.server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(response.Body.String(), "gateway_test_custom_metric 7") {
+		t.Fatalf("metrics body = %s", response.Body.String())
 	}
 }
 

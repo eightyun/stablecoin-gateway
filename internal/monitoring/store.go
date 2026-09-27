@@ -1,0 +1,237 @@
+package monitoring
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+var ErrStoreRequired = errors.New("业务监控 Store 需要数据库连接")
+
+// Store 从 PostgreSQL 读取业务风险快照，不修改业务数据。
+type Store struct {
+	db *pgxpool.Pool
+}
+
+// NewStore 创建业务监控 Store。
+func NewStore(db *pgxpool.Pool) (*Store, error) {
+	if db == nil {
+		return nil, ErrStoreRequired
+	}
+	return &Store{db: db}, nil
+}
+
+// Snapshot 在可重复读只读事务中读取所有指标，避免跨查询时间漂移。
+func (store *Store) Snapshot(ctx context.Context) (Snapshot, error) {
+	tx, err := store.db.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("开始业务监控快照事务: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	snapshot := emptySnapshot()
+	if err := readReconciliationCases(ctx, tx, snapshot.OpenReconciliationCases); err != nil {
+		return Snapshot{}, err
+	}
+	if err := readPayouts(ctx, tx, snapshot.Payouts); err != nil {
+		return Snapshot{}, err
+	}
+	if err := readOutbox(ctx, tx, snapshot.Outbox); err != nil {
+		return Snapshot{}, err
+	}
+	if err := readCursors(ctx, tx, snapshot.IndexerCursors); err != nil {
+		return Snapshot{}, err
+	}
+	if err := readReconciliationRuns(ctx, tx, snapshot.LastReconciliationRun); err != nil {
+		return Snapshot{}, err
+	}
+	if err := readWalletSnapshots(ctx, tx, snapshot.LastWalletSnapshot); err != nil {
+		return Snapshot{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Snapshot{}, fmt.Errorf("提交业务监控快照事务: %w", err)
+	}
+	return snapshot, nil
+}
+
+func emptySnapshot() Snapshot {
+	snapshot := Snapshot{
+		OpenReconciliationCases: make(map[string]int64, len(reconciliationSeverity)),
+		Payouts:                 make(map[string]CountAndOldest, len(payoutStatuses)),
+		Outbox:                  make(map[string]CountAndOldest, len(outboxStatuses)),
+		IndexerCursors:          make(map[string]CursorSnapshot),
+		LastReconciliationRun:   make(map[string]float64, len(reconciliationKinds)),
+		LastWalletSnapshot:      make(map[string]float64),
+	}
+	for _, severity := range reconciliationSeverity {
+		snapshot.OpenReconciliationCases[severity] = 0
+	}
+	for _, status := range payoutStatuses {
+		snapshot.Payouts[status] = CountAndOldest{}
+	}
+	for _, status := range outboxStatuses {
+		snapshot.Outbox[status] = CountAndOldest{}
+	}
+	for _, kind := range reconciliationKinds {
+		snapshot.LastReconciliationRun[kind] = 0
+	}
+	return snapshot
+}
+
+func readReconciliationCases(ctx context.Context, tx pgx.Tx, target map[string]int64) error {
+	rows, err := tx.Query(ctx, `
+		SELECT severity, COUNT(*)
+		FROM reconciliation_cases
+		WHERE status = 'open'
+		GROUP BY severity
+	`)
+	if err != nil {
+		return fmt.Errorf("查询未关闭对账工单: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var severity string
+		var count int64
+		if err := rows.Scan(&severity, &count); err != nil {
+			return fmt.Errorf("读取未关闭对账工单: %w", err)
+		}
+		target[severity] = count
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历未关闭对账工单: %w", err)
+	}
+	return nil
+}
+
+func readPayouts(ctx context.Context, tx pgx.Tx, target map[string]CountAndOldest) error {
+	rows, err := tx.Query(ctx, `
+		SELECT status, COUNT(*), COALESCE(EXTRACT(EPOCH FROM MIN(created_at)), 0)::double precision
+		FROM payouts
+		WHERE status IN ('pending_review', 'approved', 'ready_for_broadcast', 'confirming')
+		GROUP BY status
+	`)
+	if err != nil {
+		return fmt.Errorf("查询出款状态指标: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var value CountAndOldest
+		if err := rows.Scan(&status, &value.Count, &value.OldestCreatedUnixTime); err != nil {
+			return fmt.Errorf("读取出款状态指标: %w", err)
+		}
+		target[status] = value
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历出款状态指标: %w", err)
+	}
+	return nil
+}
+
+func readOutbox(ctx context.Context, tx pgx.Tx, target map[string]CountAndOldest) error {
+	rows, err := tx.Query(ctx, `
+		SELECT status, COUNT(*), COALESCE(EXTRACT(EPOCH FROM MIN(created_at)), 0)::double precision
+		FROM outbox_events
+		WHERE status IN ('pending', 'processing', 'dead')
+		GROUP BY status
+	`)
+	if err != nil {
+		return fmt.Errorf("查询 Outbox 状态指标: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var value CountAndOldest
+		if err := rows.Scan(&status, &value.Count, &value.OldestCreatedUnixTime); err != nil {
+			return fmt.Errorf("读取 Outbox 状态指标: %w", err)
+		}
+		target[status] = value
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历 Outbox 状态指标: %w", err)
+	}
+	return nil
+}
+
+func readCursors(ctx context.Context, tx pgx.Tx, target map[string]CursorSnapshot) error {
+	rows, err := tx.Query(ctx, `
+		SELECT network, next_height, EXTRACT(EPOCH FROM updated_at)::double precision
+		FROM chain_scan_cursors
+	`)
+	if err != nil {
+		return fmt.Errorf("查询链扫描游标指标: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var network string
+		var cursor CursorSnapshot
+		if err := rows.Scan(&network, &cursor.NextHeight, &cursor.UpdatedUnixTime); err != nil {
+			return fmt.Errorf("读取链扫描游标指标: %w", err)
+		}
+		target[network] = cursor
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历链扫描游标指标: %w", err)
+	}
+	return nil
+}
+
+func readReconciliationRuns(ctx context.Context, tx pgx.Tx, target map[string]float64) error {
+	rows, err := tx.Query(ctx, `
+		SELECT kind, EXTRACT(EPOCH FROM MAX(snapshot_at))::double precision
+		FROM reconciliation_runs
+		GROUP BY kind
+	`)
+	if err != nil {
+		return fmt.Errorf("查询最近对账时间: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind string
+		var timestamp float64
+		if err := rows.Scan(&kind, &timestamp); err != nil {
+			return fmt.Errorf("读取最近对账时间: %w", err)
+		}
+		target[kind] = timestamp
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历最近对账时间: %w", err)
+	}
+	return nil
+}
+
+func readWalletSnapshots(ctx context.Context, tx pgx.Tx, target map[string]float64) error {
+	rows, err := tx.Query(ctx, `
+		SELECT asset.id, COALESCE(EXTRACT(EPOCH FROM MAX(run.captured_at)), 0)::double precision
+		FROM assets AS asset
+		LEFT JOIN wallet_balance_snapshot_runs AS run ON run.asset_id = asset.id
+		WHERE asset.status = 'active'
+		  AND EXISTS (
+		      SELECT 1
+		      FROM custody_wallets AS wallet
+		      WHERE wallet.asset_id = asset.id AND wallet.status = 'active'
+		  )
+		GROUP BY asset.id
+	`)
+	if err != nil {
+		return fmt.Errorf("查询最近钱包快照时间: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var assetID string
+		var timestamp float64
+		if err := rows.Scan(&assetID, &timestamp); err != nil {
+			return fmt.Errorf("读取最近钱包快照时间: %w", err)
+		}
+		target[assetID] = timestamp
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历最近钱包快照时间: %w", err)
+	}
+	return nil
+}

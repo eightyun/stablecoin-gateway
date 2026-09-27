@@ -35,6 +35,7 @@ type Config struct {
 type Service struct {
 	config   Config
 	server   *http.Server
+	registry *prometheus.Registry
 	observer *WorkerObserver
 }
 
@@ -79,8 +80,24 @@ func New(config Config, checker ReadinessChecker) (*Service, error) {
 		server: &http.Server{
 			Addr: config.Addr, Handler: mux, ReadHeaderTimeout: config.ReadHeaderTimeout,
 		},
+		registry: registry,
 		observer: observer,
 	}, nil
+}
+
+// Register 注册当前进程独有的指标 Collector。
+func (service *Service) Register(collectors ...prometheus.Collector) error {
+	for _, collector := range collectors {
+		if collector == nil {
+			return ErrInvalidConfig
+		}
+	}
+	for _, collector := range collectors {
+		if err := service.registry.Register(collector); err != nil {
+			return fmt.Errorf("注册 Prometheus 指标: %w", err)
+		}
+	}
+	return nil
 }
 
 // WorkerObserver 返回供后台运行器复用的进程级指标观察器。

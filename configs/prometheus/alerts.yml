@@ -1,0 +1,83 @@
+groups:
+  - name: stablecoin-gateway-business
+    rules:
+      - alert: StablecoinGatewayMonitorDown
+        expr: up{job="stablecoin-gateway-monitor"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: stablecoin-gateway 业务监控进程不可用
+          description: Prometheus 已连续 2 分钟无法抓取 gateway-monitor。
+
+      - alert: StablecoinGatewayMonitorSamplingFailures
+        expr: stablecoin_gateway_worker_consecutive_failures{worker="business-monitor"} >= 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 业务风险指标连续采样失败
+          description: gateway-monitor 已连续至少 3 次无法读取一致性数据库快照。
+
+      - alert: StablecoinGatewayCriticalReconciliationCases
+        expr: stablecoin_gateway_business_reconciliation_open_cases{severity="critical"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 存在未关闭的严重对账差异
+          description: 当前有 {{ $value }} 个 critical 对账工单需要人工处置。
+
+      - alert: StablecoinGatewayOutboxDeadLetters
+        expr: stablecoin_gateway_business_outbox_events{status="dead"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Outbox 存在死信
+          description: 当前有 {{ $value }} 个 Outbox 死信事件需要人工处置。
+
+      - alert: StablecoinGatewayPayoutAwaitingBroadcastTooLong
+        expr: stablecoin_gateway_business_payouts{status="ready_for_broadcast"} > 0 and (time() - stablecoin_gateway_business_payout_oldest_created_timestamp_seconds{status="ready_for_broadcast"}) > 300
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 已签名出款等待广播时间过长
+          description: 最早一笔 ready_for_broadcast 出款创建已超过 5 分钟，请检查执行 Worker。
+
+      - alert: StablecoinGatewayPayoutConfirmingTooLong
+        expr: stablecoin_gateway_business_payouts{status="confirming"} > 0 and (time() - stablecoin_gateway_business_payout_oldest_created_timestamp_seconds{status="confirming"}) > 900
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 出款确认时间过长
+          description: 最早一笔 confirming 出款创建已超过 15 分钟，请检查节点与链上交易。
+
+      - alert: StablecoinGatewayIndexerCursorStale
+        expr: (time() - stablecoin_gateway_business_indexer_cursor_updated_timestamp_seconds) > 120
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 链索引游标停止更新
+          description: 网络 {{ $labels.network }} 的索引游标已超过 2 分钟没有活动。
+
+      - alert: StablecoinGatewayReconciliationStale
+        expr: stablecoin_gateway_business_reconciliation_last_run_timestamp_seconds == 0 or (time() - stablecoin_gateway_business_reconciliation_last_run_timestamp_seconds) > 90000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 对账任务未按日执行
+          description: 对账类型 {{ $labels.kind }} 从未运行或最近一次运行已超过 25 小时。
+
+      - alert: StablecoinGatewayWalletSnapshotStale
+        expr: stablecoin_gateway_business_wallet_snapshot_last_capture_timestamp_seconds == 0 or (time() - stablecoin_gateway_business_wallet_snapshot_last_capture_timestamp_seconds) > 7200
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 托管钱包余额快照过期
+          description: 资产 {{ $labels.asset_id }} 从未生成钱包快照或最近快照已超过 2 小时。

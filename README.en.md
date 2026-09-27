@@ -46,8 +46,9 @@ Implemented components:
 - Unified custody-wallet registration and finalized TRC20 wallet snapshots bound to stable ledger checkpoints
 - Custody asset reconciliation between on-chain totals and the ledger checkpoint captured with the same snapshot, with separate shortfall and excess cases
 - Prometheus metrics, liveness probes, and PostgreSQL readiness probes for long-running fund workers
+- A dedicated business-risk monitor with Prometheus alerts for reconciliation findings, payout backlog, Outbox dead letters, stalled indexing, and stale scheduled controls
 
-Not yet implemented: automated address screening, wallet sweeping, complete four-layer reconciliation across chain, ledger, in-flight funds, and providers, alert rules and dashboards, and a production KMS/HSM/MPC signing backend.
+Not yet implemented: automated address screening, wallet sweeping, complete four-layer reconciliation across chain, ledger, in-flight funds, and providers, monitoring dashboards, and a production KMS/HSM/MPC signing backend.
 
 ## Local Development
 
@@ -146,7 +147,7 @@ go run ./cmd/gateway-webhook-worker
 
 The worker rejects private, loopback, and link-local targets and does not follow redirects by default. Set `GATEWAY_WEBHOOK_ALLOW_PRIVATE_NETWORKS=true` only when delivering to a trusted internal network is intentional.
 
-## Worker Monitoring
+## Monitoring and Alerts
 
 The indexer, deposit matcher, payout signer, payout executor, and webhook worker expose these endpoints on `127.0.0.1:9090` by default:
 
@@ -161,7 +162,20 @@ curl http://127.0.0.1:9090/readyz
 curl http://127.0.0.1:9090/metrics
 ```
 
-Assign a different port to each worker when several run directly on the same host. Containers or Kubernetes may reuse the container-local port. If binding beyond loopback, restrict the metrics port with network policy. This phase provides a reliable metrics endpoint; Prometheus/Alertmanager deployment and alert rules remain separate work.
+Assign a different port to each worker when several run directly on the same host. Containers or Kubernetes may reuse the container-local port. If binding beyond loopback, restrict the metrics port with network policy. The repository provides alert rules but does not deploy Prometheus or Alertmanager.
+
+Start the independent, read-only business-risk monitor:
+
+```bash
+export GATEWAY_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway?sslmode=disable'
+export GATEWAY_OBSERVABILITY_ADDR='127.0.0.1:9096'
+export GATEWAY_MONITOR_REFRESH_INTERVAL='15s'
+go run ./cmd/gateway-monitor
+```
+
+The process periodically captures a repeatable-read PostgreSQL snapshot. Prometheus scrapes in-memory gauges and therefore does not query the database at scrape frequency. Metrics cover open reconciliation cases, payout status and oldest creation time, Outbox backlog and dead letters, indexer cursor activity, and the latest reconciliation and wallet-snapshot timestamps. They are observational only and never mutate ledger or business state.
+
+Load [`configs/prometheus/alerts.yml`](configs/prometheus/alerts.yml) into Prometheus. The process-down rule assumes the scrape job is named `stablecoin-gateway-monitor`. The payout, cursor, reconciliation, and wallet-snapshot thresholds are safe starting points and must be tuned to chain finality, scheduling frequency, and production SLAs. Cursor staleness currently detects stopped indexer activity; exact chain-head lag will follow with node-level monitoring.
 
 Approve or reject a pending payout:
 

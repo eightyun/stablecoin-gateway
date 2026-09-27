@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY outbox_events_monitoring_status_created_idx;
