@@ -3,6 +3,7 @@ package payout
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -10,8 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eightyun/stablecoin-gateway/internal/chain/tron"
 	"github.com/eightyun/stablecoin-gateway/internal/identity"
 	"github.com/eightyun/stablecoin-gateway/internal/ledger"
+	"github.com/eightyun/stablecoin-gateway/internal/outbox"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -57,6 +60,22 @@ type ReviewResult struct {
 	Changed               bool      `json:"changed"`
 }
 
+type payoutRejectedPayload struct {
+	PayoutID            string    `json:"payout_id"`
+	MerchantID          string    `json:"merchant_id"`
+	MerchantReference   string    `json:"merchant_reference"`
+	AssetID             string    `json:"asset_id"`
+	Network             string    `json:"network"`
+	DestinationAddress  string    `json:"destination_address"`
+	Amount              string    `json:"amount"`
+	Status              string    `json:"status"`
+	LedgerTransactionID string    `json:"ledger_transaction_id"`
+	ReasonCode          string    `json:"reason_code"`
+	ReviewedAt          time.Time `json:"reviewed_at"`
+}
+
+const payoutRejectionCodeManualReview = "manual_review_rejected"
+
 // Review 审批出款。拒绝操作会在同一事务内解冻资金。
 func (store *Store) Review(ctx context.Context, request ReviewRequest) (result ReviewResult, err error) {
 	request = normalizeReviewRequest(request)
@@ -74,17 +93,20 @@ func (store *Store) Review(ctx context.Context, request ReviewRequest) (result R
 		}
 	}()
 
-	var merchantID, assetID, amountText, currentStatus string
+	var merchantID, merchantReference, assetID, network, destinationAddress, amountText, currentStatus string
 	var reviewedBy, reviewReason, unfreezeTransactionID sql.NullString
 	var reviewedAt sql.NullTime
 	err = databaseTransaction.QueryRow(ctx, `
-		SELECT merchant_id::TEXT, asset_id, amount::TEXT, status,
-		       reviewed_by, review_reason, reviewed_at, unfreeze_transaction_id::TEXT
-		FROM payouts
-		WHERE id = $1
-		FOR UPDATE
+		SELECT payout.merchant_id::TEXT, payout.merchant_reference, payout.asset_id,
+		       asset.network, payout.destination_address, payout.amount::TEXT, payout.status,
+		       payout.reviewed_by, payout.review_reason, payout.reviewed_at,
+		       payout.unfreeze_transaction_id::TEXT
+		FROM payouts AS payout
+		JOIN assets AS asset ON asset.id = payout.asset_id
+		WHERE payout.id = $1
+		FOR UPDATE OF payout
 	`, request.PayoutID).Scan(
-		&merchantID, &assetID, &amountText, &currentStatus,
+		&merchantID, &merchantReference, &assetID, &network, &destinationAddress, &amountText, &currentStatus,
 		&reviewedBy, &reviewReason, &reviewedAt, &unfreezeTransactionID,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -138,10 +160,64 @@ func (store *Store) Review(ctx context.Context, request ReviewRequest) (result R
 	if err != nil {
 		return ReviewResult{}, fmt.Errorf("更新出款审批状态: %w", err)
 	}
+	if err = recordPayoutReviewAudit(ctx, databaseTransaction, request, result); err != nil {
+		return ReviewResult{}, err
+	}
+	if request.Decision == DecisionReject {
+		if err = enqueuePayoutRejected(ctx, databaseTransaction, payoutRejectedPayload{
+			PayoutID: request.PayoutID, MerchantID: merchantID, MerchantReference: merchantReference,
+			AssetID: assetID, Network: network, DestinationAddress: destinationAddress,
+			Amount: amountText, Status: StatusRejected,
+			LedgerTransactionID: result.UnfreezeTransactionID,
+			ReasonCode:          payoutRejectionCodeManualReview, ReviewedAt: result.ReviewedAt,
+		}); err != nil {
+			return ReviewResult{}, err
+		}
+	}
 	if err = databaseTransaction.Commit(ctx); err != nil {
 		return ReviewResult{}, fmt.Errorf("提交出款审批事务: %w", err)
 	}
 	return result, nil
+}
+
+func recordPayoutReviewAudit(
+	ctx context.Context,
+	transaction pgx.Tx,
+	request ReviewRequest,
+	result ReviewResult,
+) error {
+	_, err := transaction.Exec(ctx, `
+		INSERT INTO payout_review_audits (
+			payout_id, decision, resulting_status, reviewer, reason, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6)
+	`, request.PayoutID, request.Decision, result.Status, request.Reviewer, request.Reason, result.ReviewedAt)
+	if err != nil {
+		return fmt.Errorf("记录出款审批审计: %w", err)
+	}
+	return nil
+}
+
+func enqueuePayoutRejected(ctx context.Context, transaction pgx.Tx, payload payoutRejectedPayload) error {
+	destinationAddress, err := tron.NormalizeAddressBase58(payload.DestinationAddress)
+	if err != nil {
+		return fmt.Errorf("转换拒绝出款目的地址: %w", err)
+	}
+	payload.DestinationAddress = destinationAddress
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("编码出款拒绝事件: %w", err)
+	}
+	eventID, err := identity.NewUUID()
+	if err != nil {
+		return err
+	}
+	if err := outbox.EnqueueInTransaction(ctx, transaction, outbox.PendingEvent{
+		ID: eventID, Topic: TopicPayoutRejected,
+		AggregateType: "payout", AggregateID: payload.PayoutID, Payload: encoded,
+	}); err != nil {
+		return fmt.Errorf("创建出款拒绝事件: %w", err)
+	}
+	return nil
 }
 
 func (store *Store) unfreezeRejectedPayout(

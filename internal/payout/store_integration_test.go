@@ -144,6 +144,9 @@ func TestStoreApprovesPayoutIdempotently(t *testing.T) {
 	if err != nil || retry.Changed || retry.ReviewedAt != result.ReviewedAt {
 		t.Fatalf("重复 Review() = %+v, %v", retry, err)
 	}
+	assertPayoutReviewAudit(t, fixture.pool, request, result)
+	assertPayoutRejectedEventCount(t, fixture.pool, created.Payout.ID, 0)
+	assertPayoutReviewAuditImmutable(t, fixture.pool, created.Payout.ID)
 	request.Decision = DecisionReject
 	if _, err := fixture.store.Review(context.Background(), request); !errors.Is(err, ErrPayoutStateConflict) {
 		t.Fatalf("冲突 Review() error = %v", err)
@@ -176,6 +179,14 @@ func TestStoreRejectsPayoutAndUnfreezesBalance(t *testing.T) {
 	if err != nil || retry.Changed || retry.UnfreezeTransactionID != result.UnfreezeTransactionID {
 		t.Fatalf("重复 Review() = %+v, %v", retry, err)
 	}
+	assertPayoutReviewAudit(t, fixture.pool, request, result)
+	assertPayoutRejectedEvent(t, fixture.pool, payoutRejectedPayload{
+		PayoutID: created.Payout.ID, MerchantID: fixture.merchantID,
+		MerchantReference: "reject-order-1", AssetID: fixture.assetID,
+		DestinationAddress: testDestination, Amount: "60", Status: StatusRejected,
+		LedgerTransactionID: result.UnfreezeTransactionID,
+		ReasonCode:          payoutRejectionCodeManualReview, ReviewedAt: result.ReviewedAt,
+	})
 	request.Reason = "different reason"
 	if _, err := fixture.store.Review(context.Background(), request); !errors.Is(err, ErrPayoutStateConflict) {
 		t.Fatalf("冲突 Review() error = %v", err)
@@ -228,6 +239,24 @@ func TestStoreSerializesConcurrentPayoutReviews(t *testing.T) {
 	}
 	if details.Status == StatusRejected && (available != "100" || frozen != "0") {
 		t.Fatalf("拒绝胜出余额 available=%s frozen=%s", available, frozen)
+	}
+	var decision ReviewDecision
+	var reviewer, reason string
+	if err := fixture.pool.QueryRow(context.Background(), `
+		SELECT decision, reviewer, reason FROM payout_review_audits WHERE payout_id = $1
+	`, created.Payout.ID).Scan(&decision, &reviewer, &reason); err != nil {
+		t.Fatalf("查询并发审批审计: %v", err)
+	}
+	if details.Status == StatusApproved {
+		if decision != DecisionApprove || reviewer != "approver" || reason != "approved" {
+			t.Fatalf("审批胜出审计 decision=%s reviewer=%s reason=%s", decision, reviewer, reason)
+		}
+		assertPayoutRejectedEventCount(t, fixture.pool, created.Payout.ID, 0)
+	} else {
+		if decision != DecisionReject || reviewer != "rejector" || reason != "rejected" {
+			t.Fatalf("拒绝胜出审计 decision=%s reviewer=%s reason=%s", decision, reviewer, reason)
+		}
+		assertPayoutRejectedEventCount(t, fixture.pool, created.Payout.ID, 1)
 	}
 }
 
@@ -418,6 +447,81 @@ func assertPayoutTerminalEvent(
 		  AND topic IN ($2, $3)
 	`, payoutID, TopicPayoutSucceeded, TopicPayoutFailed).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("出款终态事件数量=%d error=%v", count, err)
+	}
+}
+
+func assertPayoutReviewAudit(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	request ReviewRequest,
+	result ReviewResult,
+) {
+	t.Helper()
+	var decision ReviewDecision
+	var status, reviewer, reason string
+	var createdAt time.Time
+	if err := pool.QueryRow(context.Background(), `
+		SELECT decision, resulting_status, reviewer, reason, created_at
+		FROM payout_review_audits WHERE payout_id = $1
+	`, request.PayoutID).Scan(&decision, &status, &reviewer, &reason, &createdAt); err != nil {
+		t.Fatalf("查询出款审批审计: %v", err)
+	}
+	if decision != request.Decision || status != result.Status || reviewer != request.Reviewer ||
+		reason != request.Reason || !createdAt.Equal(result.ReviewedAt) {
+		t.Fatalf("出款审批审计 decision=%s status=%s reviewer=%s reason=%s created_at=%s result=%+v",
+			decision, status, reviewer, reason, createdAt, result)
+	}
+	var count int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT COUNT(*) FROM payout_review_audits WHERE payout_id = $1
+	`, request.PayoutID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("出款审批审计数量=%d error=%v", count, err)
+	}
+}
+
+func assertPayoutReviewAuditImmutable(t *testing.T, pool *pgxpool.Pool, payoutID string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE payout_review_audits SET reason = 'tampered' WHERE payout_id = $1
+	`, payoutID); err == nil || !strings.Contains(err.Error(), "payout review audits are immutable") {
+		t.Fatalf("修改出款审批审计 error=%v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+		DELETE FROM payout_review_audits WHERE payout_id = $1
+	`, payoutID); err == nil || !strings.Contains(err.Error(), "payout review audits are immutable") {
+		t.Fatalf("删除出款审批审计 error=%v", err)
+	}
+}
+
+func assertPayoutRejectedEvent(t *testing.T, pool *pgxpool.Pool, expected payoutRejectedPayload) {
+	t.Helper()
+	var payloadBytes []byte
+	var status string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT payload, status FROM outbox_events
+		WHERE topic = $1 AND aggregate_type = 'payout' AND aggregate_id = $2
+	`, TopicPayoutRejected, expected.PayoutID).Scan(&payloadBytes, &status); err != nil {
+		t.Fatalf("查询出款拒绝事件: %v", err)
+	}
+	var actual payoutRejectedPayload
+	if err := json.Unmarshal(payloadBytes, &actual); err != nil {
+		t.Fatalf("解析出款拒绝事件: %v", err)
+	}
+	expected.Network = actual.Network
+	if status != "pending" || actual != expected || !strings.HasPrefix(actual.Network, "tron-nile-") {
+		t.Fatalf("出款拒绝事件 status=%s actual=%+v expected=%+v", status, actual, expected)
+	}
+	assertPayoutRejectedEventCount(t, pool, expected.PayoutID, 1)
+}
+
+func assertPayoutRejectedEventCount(t *testing.T, pool *pgxpool.Pool, payoutID string, expected int) {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT COUNT(*) FROM outbox_events
+		WHERE topic = $1 AND aggregate_type = 'payout' AND aggregate_id = $2
+	`, TopicPayoutRejected, payoutID).Scan(&count); err != nil || count != expected {
+		t.Fatalf("出款拒绝事件数量=%d expected=%d error=%v", count, expected, err)
 	}
 }
 

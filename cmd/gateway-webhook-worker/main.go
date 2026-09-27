@@ -68,6 +68,7 @@ func run(ctx context.Context) error {
 		"deposit.confirmed":         handler,
 		payout.TopicPayoutSucceeded: handler,
 		payout.TopicPayoutFailed:    handler,
+		payout.TopicPayoutRejected:  handler,
 	})
 	if err != nil {
 		return err

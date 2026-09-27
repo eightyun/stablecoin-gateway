@@ -31,7 +31,7 @@ Implemented components:
 - Webhook HMAC signatures, exponential backoff, dead lettering, and per-attempt delivery audit
 - Webhook SSRF protection that blocks private targets and redirects by default
 - Merchant payout requests with TRON address validation and atomic balance freezing
-- Audited payout review with atomic unfreezing on rejection
+- Immutable payout-review audit with atomic unfreezing and webhook notification on rejection
 - Leased payout-signing queue with fencing tokens and an isolated signer interface
 - HTTPS remote-signer client and TRON FullNode broadcast adapter
 - Local semantic binding of signed transactions to owner, contract, destination, amount, fee, and lifetime
@@ -211,13 +211,13 @@ The preflight rejects mainnet, stale or future-dated heads, excessive finality l
 
 ## Webhooks
 
-Current event types are `deposit.confirmed`, `payout.succeeded`, and `payout.failed`. Deposit events are created in the same transaction as deposit posting; payout events are created in the same transaction as terminal settlement or fund release. The event envelope is stable:
+Current event types are `deposit.confirmed`, `payout.rejected`, `payout.succeeded`, and `payout.failed`. Deposit events are created in the same transaction as deposit posting. Payout rejection events are created atomically with the review audit and fund release; other payout events are created in the same transaction as terminal settlement or fund release. The event envelope is stable:
 
 ```json
 {"id":"event UUID","type":"event type","created_at":"RFC3339 timestamp","data":{}}
 ```
 
-Payout event `data` includes `payout_id`, `merchant_id`, `merchant_reference`, `asset_id`, `network`, `destination_address`, `amount`, `status`, `transaction_id`, and `ledger_transaction_id`; `payout.failed` additionally includes `failure_reason`. TRON destinations use Base58Check, matching the merchant API.
+Terminal payout event `data` includes `payout_id`, `merchant_id`, `merchant_reference`, `asset_id`, `network`, `destination_address`, `amount`, `status`, `transaction_id`, and `ledger_transaction_id`; `payout.failed` additionally includes `failure_reason`. Since `payout.rejected` has no on-chain transaction, it omits `transaction_id` and additionally includes a stable `reason_code` and `reviewed_at`. Internal reviewer identity and review notes remain audit-only and are never exposed to merchants. TRON destinations use Base58Check, matching the merchant API.
 
 Requests include `X-Gateway-Event-ID`, `X-Gateway-Event-Type`, `X-Gateway-Event-Timestamp`, and `X-Gateway-Signature`. The signature is:
 

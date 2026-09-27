@@ -31,7 +31,7 @@
 - Webhook HMAC 签名、指数退避、死信与逐次投递审计
 - 默认阻止私网目标、禁止重定向的 Webhook SSRF 防护
 - 商户出款申请、TRON 地址校验与原子余额冻结
-- 带审计记录的出款审批，以及拒绝时的原子余额解冻
+- 不可变出款审批审计，以及拒绝时的原子余额解冻和 Webhook 通知
 - 带租约和栅栏令牌的出款签名队列，以及隔离签名器接口
 - HTTPS 远程签名器客户端与 TRON FullNode 广播适配器
 - 签名交易与付款地址、合约、收款地址、金额、费用及有效期的本地语义绑定
@@ -211,13 +211,13 @@ go run ./cmd/gateway-tron-preflight
 
 ## Webhook
 
-当前投递 `deposit.confirmed`、`payout.succeeded` 和 `payout.failed`。充值事件与充值入账同事务创建；出款事件与终态账本结算或解冻同事务创建。事件信封固定为：
+当前投递 `deposit.confirmed`、`payout.rejected`、`payout.succeeded` 和 `payout.failed`。充值事件与充值入账同事务创建；出款拒绝事件与审批审计、余额解冻同事务创建；其他出款事件与终态账本结算或解冻同事务创建。事件信封固定为：
 
 ```json
 {"id":"事件 UUID","type":"事件类型","created_at":"RFC3339 时间","data":{}}
 ```
 
-出款事件 `data` 包含 `payout_id`、`merchant_id`、`merchant_reference`、`asset_id`、`network`、`destination_address`、`amount`、`status`、`transaction_id` 和 `ledger_transaction_id`；`payout.failed` 额外包含 `failure_reason`。TRON 目的地址按商户 API 约定使用 Base58Check。
+出款终态事件 `data` 包含 `payout_id`、`merchant_id`、`merchant_reference`、`asset_id`、`network`、`destination_address`、`amount`、`status`、`transaction_id` 和 `ledger_transaction_id`；`payout.failed` 额外包含 `failure_reason`。`payout.rejected` 尚无链上交易，因此不包含 `transaction_id`，额外包含稳定的 `reason_code` 和 `reviewed_at`；内部审批人和审批备注只进入审计表，不向商户泄露。TRON 目的地址按商户 API 约定使用 Base58Check。
 
 请求包含 `X-Gateway-Event-ID`、`X-Gateway-Event-Type`、`X-Gateway-Event-Timestamp` 和 `X-Gateway-Signature`。签名值为：
 
