@@ -97,6 +97,13 @@ type TokenMetadata struct {
 	Decimals uint8
 }
 
+// TokenBalanceReader 从已固化链状态读取 TRC20 地址余额。
+// 调用方需要在批量读取前后核对 SolidifiedHead，避免跨高度拼接快照。
+type TokenBalanceReader interface {
+	SolidifiedHead(ctx context.Context) (Header, error)
+	TokenBalance(ctx context.Context, contractAddress, ownerAddress string) (string, error)
+}
+
 // TransferSignRequest 是交给隔离签名服务的语义化 TRC20 转账请求。
 // RequestID 是全局幂等键；同一请求必须始终返回同一笔已签名交易。
 type TransferSignRequest struct {

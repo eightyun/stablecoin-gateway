@@ -64,6 +64,7 @@ func (client *Client) Head(ctx context.Context) (tron.Header, error) {
 
 var _ tron.FinalizedReader = (*Client)(nil)
 var _ tron.FinalizedTransactionReader = (*Client)(nil)
+var _ tron.TokenBalanceReader = (*Client)(nil)
 
 // New 创建 SolidityNode HTTP 客户端。nil HTTP 客户端使用带超时的标准客户端。
 func New(config Config, httpClient *http.Client) (*Client, error) {
@@ -245,16 +246,57 @@ func (client *Client) TokenMetadata(ctx context.Context, contractAddress string)
 	return tron.TokenMetadata{Symbol: symbol, Decimals: decimals}, nil
 }
 
+// TokenBalance 通过 SolidityNode 常量调用读取已固化状态中的 TRC20 最小单位余额。
+func (client *Client) TokenBalance(ctx context.Context, contractAddress, ownerAddress string) (string, error) {
+	contractAddress, err := tron.NormalizeAddressBase58(contractAddress)
+	if err != nil {
+		return "", err
+	}
+	ownerAddress, err = tron.NormalizeAddressBase58(ownerAddress)
+	if err != nil {
+		return "", err
+	}
+	ownerHex, err := tron.NormalizeAddressHex(ownerAddress)
+	if err != nil {
+		return "", err
+	}
+	parameter := strings.Repeat("0", 24) + ownerHex[2:]
+	result, err := client.constantCallAtPath(
+		ctx,
+		"/walletsolidity/triggerconstantcontract",
+		contractAddress,
+		"balanceOf(address)",
+		parameter,
+	)
+	if err != nil {
+		return "", fmt.Errorf("读取 TRC20 已固化余额: %w", err)
+	}
+	balance, err := decodeABIUint256(result)
+	if err != nil {
+		return "", err
+	}
+	return balance, nil
+}
+
 func (client *Client) constantCall(ctx context.Context, contractAddress, selector string) (string, error) {
+	return client.constantCallAtPath(ctx, "/wallet/triggerconstantcontract", contractAddress, selector, "")
+}
+
+func (client *Client) constantCallAtPath(
+	ctx context.Context,
+	path, contractAddress, selector, parameter string,
+) (string, error) {
 	request := struct {
 		OwnerAddress    string `json:"owner_address"`
 		ContractAddress string `json:"contract_address"`
 		Function        string `json:"function_selector"`
+		Parameter       string `json:"parameter,omitempty"`
 		Visible         bool   `json:"visible"`
 	}{
 		OwnerAddress:    "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
 		ContractAddress: contractAddress,
 		Function:        selector,
+		Parameter:       parameter,
 		Visible:         true,
 	}
 	var response struct {
@@ -263,13 +305,21 @@ func (client *Client) constantCall(ctx context.Context, contractAddress, selecto
 			Accepted *bool `json:"result"`
 		} `json:"result"`
 	}
-	if err := client.post(ctx, "/wallet/triggerconstantcontract", request, &response); err != nil {
+	if err := client.post(ctx, path, request, &response); err != nil {
 		return "", err
 	}
 	if response.Result.Accepted == nil || !*response.Result.Accepted || len(response.ConstantResult) != 1 {
 		return "", ErrInvalidResponse
 	}
 	return response.ConstantResult[0], nil
+}
+
+func decodeABIUint256(value string) (string, error) {
+	decoded, err := hex.DecodeString(value)
+	if err != nil || len(decoded) != 32 {
+		return "", ErrInvalidResponse
+	}
+	return new(big.Int).SetBytes(decoded).String(), nil
 }
 
 func decodeABIDecimals(value string) (uint8, error) {

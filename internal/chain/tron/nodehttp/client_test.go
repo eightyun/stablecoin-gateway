@@ -100,6 +100,84 @@ func TestClientReadsHeadAndTokenMetadata(t *testing.T) {
 	}
 }
 
+func TestClientReadsFinalizedTokenBalance(t *testing.T) {
+	const contractAddress = "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf"
+	tests := []struct {
+		name   string
+		result string
+		want   string
+	}{
+		{
+			name:   "uint256 最大值",
+			result: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+			want:   "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+		},
+		{name: "零余额", result: strings.Repeat("0", 64), want: "0"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := newNodeServer(t, func(writer http.ResponseWriter, request *http.Request) {
+				if request.URL.Path != "/node/walletsolidity/triggerconstantcontract" {
+					t.Fatalf("请求路径 = %s", request.URL.Path)
+				}
+				var body struct {
+					OwnerAddress    string `json:"owner_address"`
+					ContractAddress string `json:"contract_address"`
+					Function        string `json:"function_selector"`
+					Parameter       string `json:"parameter"`
+					Visible         bool   `json:"visible"`
+				}
+				if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+					t.Fatalf("解析请求: %v", err)
+				}
+				if body.OwnerAddress != "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb" ||
+					body.ContractAddress != contractAddress || body.Function != "balanceOf(address)" ||
+					body.Parameter != "000000000000000000000000eca9bc828a3005b9a3b909f2cc5c2a54794de05f" ||
+					!body.Visible {
+					t.Fatalf("余额请求 = %+v", body)
+				}
+				writeJSON(writer, `{"constant_result":["`+test.result+`"],"result":{"result":true}}`)
+			})
+			balance, err := newClient(t, server.URL+"/node", "", 0).TokenBalance(
+				context.Background(), contractAddress, contractAddress,
+			)
+			if err != nil || balance != test.want {
+				t.Fatalf("TokenBalance() = %s, %v", balance, err)
+			}
+		})
+	}
+}
+
+func TestClientRejectsInvalidTokenBalance(t *testing.T) {
+	const contractAddress = "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf"
+	const ownerAddress = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb"
+	tests := []struct {
+		name     string
+		contract string
+		owner    string
+		response string
+	}{
+		{name: "合约地址无效", contract: "invalid", owner: ownerAddress},
+		{name: "持有人地址无效", contract: contractAddress, owner: "invalid"},
+		{name: "节点拒绝执行", contract: contractAddress, owner: ownerAddress, response: `{"result":{"result":false}}`},
+		{name: "返回值长度错误", contract: contractAddress, owner: ownerAddress, response: `{"constant_result":["00"],"result":{"result":true}}`},
+		{name: "返回值不是十六进制", contract: contractAddress, owner: ownerAddress, response: `{"constant_result":["zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"],"result":{"result":true}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := newNodeServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+				writeJSON(writer, test.response)
+			})
+			_, err := newClient(t, server.URL, "", 0).TokenBalance(
+				context.Background(), test.contract, test.owner,
+			)
+			if err == nil {
+				t.Fatal("TokenBalance() 未返回错误")
+			}
+		})
+	}
+}
+
 func TestClientReadsSolidifiedTransactionOutcome(t *testing.T) {
 	server := newNodeServer(t, func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
