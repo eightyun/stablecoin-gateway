@@ -2,6 +2,7 @@ package payout
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -13,6 +14,7 @@ import (
 	"github.com/eightyun/stablecoin-gateway/internal/chain/tron"
 	"github.com/eightyun/stablecoin-gateway/internal/identity"
 	"github.com/eightyun/stablecoin-gateway/internal/ledger"
+	"github.com/eightyun/stablecoin-gateway/internal/outbox"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -24,6 +26,20 @@ var (
 	ErrExecutionLeaseLost    = errors.New("出款执行租约已失效")
 	executionCodePattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,127}$`)
 )
+
+type payoutTerminalPayload struct {
+	PayoutID            string `json:"payout_id"`
+	MerchantID          string `json:"merchant_id"`
+	MerchantReference   string `json:"merchant_reference"`
+	AssetID             string `json:"asset_id"`
+	Network             string `json:"network"`
+	DestinationAddress  string `json:"destination_address"`
+	Amount              string `json:"amount"`
+	Status              string `json:"status"`
+	TransactionID       string `json:"transaction_id"`
+	LedgerTransactionID string `json:"ledger_transaction_id"`
+	FailureReason       string `json:"failure_reason,omitempty"`
+}
 
 // BroadcastClaim 是一笔只能广播原始签名内容的租约。
 type BroadcastClaim struct {
@@ -216,15 +232,20 @@ func (store *Store) finalizeConfirmation(ctx context.Context, claim Confirmation
 			err = errors.Join(err, rollbackErr)
 		}
 	}()
-	var merchantID, assetID, amountText string
+	var merchantID, merchantReference, assetID, network, destinationAddress, amountText, transactionID string
 	err = databaseTransaction.QueryRow(ctx, `
-		SELECT merchant_id::TEXT, asset_id, amount::TEXT
-		FROM payouts
-		WHERE id = $1 AND status = 'confirming'
-		  AND execution_lease_owner = $2 AND execution_lease_epoch = $3
-		  AND execution_lease_until > clock_timestamp()
-		FOR UPDATE
-	`, claim.PayoutID, claim.WorkerID, claim.LeaseEpoch).Scan(&merchantID, &assetID, &amountText)
+		SELECT payout.merchant_id::TEXT, payout.merchant_reference, payout.asset_id,
+		       asset.network, payout.destination_address, payout.amount::TEXT, payout.transaction_id
+		FROM payouts AS payout
+		JOIN assets AS asset ON asset.id = payout.asset_id
+		WHERE payout.id = $1 AND payout.status = 'confirming'
+		  AND payout.execution_lease_owner = $2 AND payout.execution_lease_epoch = $3
+		  AND payout.execution_lease_until > clock_timestamp()
+		FOR UPDATE OF payout
+	`, claim.PayoutID, claim.WorkerID, claim.LeaseEpoch).Scan(
+		&merchantID, &merchantReference, &assetID, &network,
+		&destinationAddress, &amountText, &transactionID,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrExecutionLeaseLost
 	}
@@ -234,6 +255,10 @@ func (store *Store) finalizeConfirmation(ctx context.Context, claim Confirmation
 	amount, err := strconv.ParseInt(amountText, 10, 64)
 	if err != nil || amount <= 0 {
 		return errors.New("出款终态金额无效")
+	}
+	destinationAddress, err = tron.NormalizeAddressBase58(destinationAddress)
+	if err != nil {
+		return fmt.Errorf("转换出款终态目的地址: %w", err)
 	}
 	debitAccountID, creditAccountID, referenceType := "", "", ""
 	if succeeded {
@@ -316,8 +341,42 @@ func (store *Store) finalizeConfirmation(ctx context.Context, claim Confirmation
 	if command.RowsAffected() != 1 {
 		return ErrExecutionLeaseLost
 	}
+	if err := enqueuePayoutTerminal(ctx, databaseTransaction, payoutTerminalPayload{
+		PayoutID: claim.PayoutID, MerchantID: merchantID, MerchantReference: merchantReference,
+		AssetID: assetID, Network: network, DestinationAddress: destinationAddress,
+		Amount: amountText, Status: status, TransactionID: transactionID,
+		LedgerTransactionID: postResult.TransactionID, FailureReason: reason,
+	}); err != nil {
+		return err
+	}
 	if err = databaseTransaction.Commit(ctx); err != nil {
 		return fmt.Errorf("提交出款终态事务: %w", err)
+	}
+	return nil
+}
+
+func enqueuePayoutTerminal(ctx context.Context, transaction pgx.Tx, payload payoutTerminalPayload) error {
+	var topic string
+	switch payload.Status {
+	case StatusSucceeded:
+		topic = TopicPayoutSucceeded
+	case StatusFailed:
+		topic = TopicPayoutFailed
+	default:
+		return errors.New("出款终态事件状态无效")
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("编码出款终态事件: %w", err)
+	}
+	eventID, err := identity.NewUUID()
+	if err != nil {
+		return err
+	}
+	if err := outbox.EnqueueInTransaction(ctx, transaction, outbox.PendingEvent{
+		ID: eventID, Topic: topic, AggregateType: "payout", AggregateID: payload.PayoutID, Payload: encoded,
+	}); err != nil {
+		return fmt.Errorf("创建出款终态事件: %w", err)
 	}
 	return nil
 }

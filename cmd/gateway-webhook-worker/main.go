@@ -11,6 +11,7 @@ import (
 	"github.com/eightyun/stablecoin-gateway/internal/config"
 	"github.com/eightyun/stablecoin-gateway/internal/database"
 	"github.com/eightyun/stablecoin-gateway/internal/outbox"
+	"github.com/eightyun/stablecoin-gateway/internal/payout"
 	"github.com/eightyun/stablecoin-gateway/internal/secretbox"
 	"github.com/eightyun/stablecoin-gateway/internal/webhook"
 )
@@ -63,7 +64,11 @@ func run(ctx context.Context) error {
 	processor, err := outbox.NewProcessor(outboxStore, outbox.Config{
 		WorkerID: cfg.WorkerID, BatchSize: cfg.BatchSize, LeaseDuration: cfg.LeaseDuration,
 		MaxAttempts: cfg.MaxAttempts, BaseBackoff: cfg.BaseBackoff, MaxBackoff: cfg.MaxBackoff,
-	}, map[string]outbox.Handler{"deposit.confirmed": handler})
+	}, map[string]outbox.Handler{
+		"deposit.confirmed":         handler,
+		payout.TopicPayoutSucceeded: handler,
+		payout.TopicPayoutFailed:    handler,
+	})
 	if err != nil {
 		return err
 	}

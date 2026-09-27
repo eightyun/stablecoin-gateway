@@ -211,11 +211,13 @@ The preflight rejects mainnet, stale or future-dated heads, excessive finality l
 
 ## Webhooks
 
-The current event type is `deposit.confirmed`. The event envelope is stable:
+Current event types are `deposit.confirmed`, `payout.succeeded`, and `payout.failed`. Deposit events are created in the same transaction as deposit posting; payout events are created in the same transaction as terminal settlement or fund release. The event envelope is stable:
 
 ```json
-{"id":"event UUID","type":"deposit.confirmed","created_at":"RFC3339 timestamp","data":{}}
+{"id":"event UUID","type":"event type","created_at":"RFC3339 timestamp","data":{}}
 ```
+
+Payout event `data` includes `payout_id`, `merchant_id`, `merchant_reference`, `asset_id`, `network`, `destination_address`, `amount`, `status`, `transaction_id`, and `ledger_transaction_id`; `payout.failed` additionally includes `failure_reason`. TRON destinations use Base58Check, matching the merchant API.
 
 Requests include `X-Gateway-Event-ID`, `X-Gateway-Event-Type`, `X-Gateway-Event-Timestamp`, and `X-Gateway-Signature`. The signature is:
 

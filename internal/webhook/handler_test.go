@@ -3,6 +3,7 @@ package webhook
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -81,6 +82,46 @@ func TestHandlerRejectsEventWithoutMerchant(t *testing.T) {
 	}
 	if err := handler.Handle(context.Background(), outbox.Event{Payload: []byte(`{}`)}); err == nil {
 		t.Fatal("Handle() 未拒绝缺少商户的事件")
+	}
+}
+
+func TestHandlerPreservesPayoutTerminalTopicAndData(t *testing.T) {
+	keyring, err := secretbox.NewKeyring(map[string][]byte{"v1": bytes.Repeat([]byte{2}, 32)}, "v1")
+	if err != nil {
+		t.Fatalf("NewKeyring() error = %v", err)
+	}
+	encrypted, err := keyring.Encrypt("webhook-endpoint:endpoint-payout", []byte("whsec_12345678901234567890"))
+	if err != nil {
+		t.Fatalf("Encrypt() error = %v", err)
+	}
+	status := 204
+	store := &deliveryStoreStub{endpoints: []Endpoint{{
+		ID: "endpoint-payout", URL: "https://example.com/hook", Encrypted: encrypted,
+	}}}
+	sender := &senderStub{results: []DeliveryResult{{
+		RequestTimestamp: 100, ResponseStatus: &status, Duration: time.Millisecond,
+	}}}
+	handler, err := NewHandler(store, keyring, sender)
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+	payload := []byte(`{"merchant_id":"123e4567-e89b-12d3-a456-426614174000","payout_id":"payout-1","status":"succeeded"}`)
+	if err := handler.Handle(context.Background(), outbox.Event{
+		ID: "event-payout", Topic: "payout.succeeded", Attempts: 1,
+		CreatedAt: time.Now(), Payload: payload,
+	}); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(sender.requests) != 1 || sender.requests[0].Topic != "payout.succeeded" {
+		t.Fatalf("投递请求 = %+v", sender.requests)
+	}
+	var envelope struct {
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(sender.requests[0].Body, &envelope); err != nil ||
+		envelope.Type != "payout.succeeded" || !bytes.Equal(envelope.Data, payload) {
+		t.Fatalf("投递信封 type=%q data=%s error=%v", envelope.Type, envelope.Data, err)
 	}
 }
 

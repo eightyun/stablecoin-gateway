@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -334,6 +335,9 @@ func TestStoreBroadcastConfirmationSettlesAndReleasesFunds(t *testing.T) {
 	if err := fixture.store.CompleteConfirmationSuccess(context.Background(), confirmation); err != nil {
 		t.Fatalf("CompleteConfirmationSuccess() error = %v", err)
 	}
+	if err := fixture.store.CompleteConfirmationSuccess(context.Background(), confirmation); !errors.Is(err, ErrExecutionLeaseLost) {
+		t.Fatalf("重复 CompleteConfirmationSuccess() error = %v", err)
+	}
 	available, frozen := fixture.balances(t)
 	if available != "40" || frozen != "0" {
 		t.Fatalf("成功结算余额 available=%s frozen=%s", available, frozen)
@@ -342,6 +346,12 @@ func TestStoreBroadcastConfirmationSettlesAndReleasesFunds(t *testing.T) {
 	if err != nil || details.Status != StatusSucceeded || details.TransactionID == "" {
 		t.Fatalf("成功出款详情 = %+v, %v", details, err)
 	}
+	assertPayoutTerminalEvent(t, fixture.pool, successPayout, TopicPayoutSucceeded, payoutTerminalPayload{
+		PayoutID: successPayout, MerchantID: fixture.merchantID,
+		MerchantReference: "execute-success-order", AssetID: fixture.assetID,
+		DestinationAddress: testDestination, Amount: "60", Status: StatusSucceeded,
+		TransactionID: details.TransactionID,
+	})
 
 	failedPayout := prepareSignedPayout(t, fixture, "execute-failed", "execute-failed-order", "20")
 	broadcast, err = fixture.store.ClaimBroadcast(context.Background(), "executor-2", time.Minute)
@@ -365,6 +375,49 @@ func TestStoreBroadcastConfirmationSettlesAndReleasesFunds(t *testing.T) {
 	details, err = fixture.store.Get(context.Background(), fixture.merchantID, failedPayout)
 	if err != nil || details.Status != StatusFailed {
 		t.Fatalf("失败出款详情 = %+v, %v", details, err)
+	}
+	assertPayoutTerminalEvent(t, fixture.pool, failedPayout, TopicPayoutFailed, payoutTerminalPayload{
+		PayoutID: failedPayout, MerchantID: fixture.merchantID,
+		MerchantReference: "execute-failed-order", AssetID: fixture.assetID,
+		DestinationAddress: testDestination, Amount: "20", Status: StatusFailed,
+		TransactionID: details.TransactionID, FailureReason: "execution_failed",
+	})
+}
+
+func assertPayoutTerminalEvent(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	payoutID, topic string,
+	expected payoutTerminalPayload,
+) {
+	t.Helper()
+	var payloadBytes []byte
+	var outboxStatus, ledgerTransactionID string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT event.payload, event.status,
+		       COALESCE(payout.settlement_transaction_id, payout.unfreeze_transaction_id)::TEXT
+		FROM outbox_events AS event
+		JOIN payouts AS payout ON payout.id::TEXT = event.aggregate_id
+		WHERE event.topic = $1 AND event.aggregate_type = 'payout' AND event.aggregate_id = $2
+	`, topic, payoutID).Scan(&payloadBytes, &outboxStatus, &ledgerTransactionID); err != nil {
+		t.Fatalf("查询出款终态事件: %v", err)
+	}
+	var actual payoutTerminalPayload
+	if err := json.Unmarshal(payloadBytes, &actual); err != nil {
+		t.Fatalf("解析出款终态事件: %v", err)
+	}
+	expected.LedgerTransactionID = ledgerTransactionID
+	expected.Network = actual.Network
+	if outboxStatus != "pending" || actual != expected || !strings.HasPrefix(actual.Network, "tron-nile-") {
+		t.Fatalf("出款终态事件 status=%s actual=%+v expected=%+v", outboxStatus, actual, expected)
+	}
+	var count int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT COUNT(*) FROM outbox_events
+		WHERE aggregate_type = 'payout' AND aggregate_id = $1
+		  AND topic IN ($2, $3)
+	`, payoutID, TopicPayoutSucceeded, TopicPayoutFailed).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("出款终态事件数量=%d error=%v", count, err)
 	}
 }
 

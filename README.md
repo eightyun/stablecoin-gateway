@@ -211,11 +211,13 @@ go run ./cmd/gateway-tron-preflight
 
 ## Webhook
 
-当前投递 `deposit.confirmed`。事件信封固定为：
+当前投递 `deposit.confirmed`、`payout.succeeded` 和 `payout.failed`。充值事件与充值入账同事务创建；出款事件与终态账本结算或解冻同事务创建。事件信封固定为：
 
 ```json
-{"id":"事件 UUID","type":"deposit.confirmed","created_at":"RFC3339 时间","data":{}}
+{"id":"事件 UUID","type":"事件类型","created_at":"RFC3339 时间","data":{}}
 ```
+
+出款事件 `data` 包含 `payout_id`、`merchant_id`、`merchant_reference`、`asset_id`、`network`、`destination_address`、`amount`、`status`、`transaction_id` 和 `ledger_transaction_id`；`payout.failed` 额外包含 `failure_reason`。TRON 目的地址按商户 API 约定使用 Base58Check。
 
 请求包含 `X-Gateway-Event-ID`、`X-Gateway-Event-Type`、`X-Gateway-Event-Timestamp` 和 `X-Gateway-Signature`。签名值为：
 
