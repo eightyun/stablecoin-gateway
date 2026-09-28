@@ -44,6 +44,9 @@ func (store *Store) Snapshot(ctx context.Context) (Snapshot, error) {
 	if err := readOutbox(ctx, tx, snapshot.Outbox); err != nil {
 		return Snapshot{}, err
 	}
+	if err := readScreening(ctx, tx, snapshot.ScreeningJobs, snapshot.ScreeningDecisions); err != nil {
+		return Snapshot{}, err
+	}
 	if err := readCursors(ctx, tx, snapshot.IndexerCursors); err != nil {
 		return Snapshot{}, err
 	}
@@ -67,6 +70,8 @@ func emptySnapshot() Snapshot {
 		IndexerCursors:          make(map[string]CursorSnapshot),
 		LastReconciliationRun:   make(map[string]float64, len(reconciliationKinds)),
 		LastWalletSnapshot:      make(map[string]float64),
+		ScreeningJobs:           make(map[string]CountAndOldest, len(screeningJobStatuses)),
+		ScreeningDecisions:      make(map[string]int64, len(screeningDecisions)),
 	}
 	for _, severity := range reconciliationSeverity {
 		snapshot.OpenReconciliationCases[severity] = 0
@@ -79,6 +84,12 @@ func emptySnapshot() Snapshot {
 	}
 	for _, kind := range reconciliationKinds {
 		snapshot.LastReconciliationRun[kind] = 0
+	}
+	for _, status := range screeningJobStatuses {
+		snapshot.ScreeningJobs[status] = CountAndOldest{}
+	}
+	for _, decision := range screeningDecisions {
+		snapshot.ScreeningDecisions[decision] = 0
 	}
 	return snapshot
 }
@@ -154,6 +165,64 @@ func readOutbox(ctx context.Context, tx pgx.Tx, target map[string]CountAndOldest
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("遍历 Outbox 状态指标: %w", err)
+	}
+	return nil
+}
+
+func readScreening(
+	ctx context.Context,
+	tx pgx.Tx,
+	jobs map[string]CountAndOldest,
+	decisions map[string]int64,
+) error {
+	rows, err := tx.Query(ctx, `
+		SELECT status, COUNT(*), COALESCE(EXTRACT(EPOCH FROM MIN(created_at)), 0)::double precision
+		FROM payout_screening_jobs
+		WHERE status IN ('pending', 'processing')
+		GROUP BY status
+	`)
+	if err != nil {
+		return fmt.Errorf("查询地址筛查任务指标: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var value CountAndOldest
+		if err := rows.Scan(&status, &value.Count, &value.OldestCreatedUnixTime); err != nil {
+			return fmt.Errorf("读取地址筛查任务指标: %w", err)
+		}
+		jobs[status] = value
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历地址筛查任务指标: %w", err)
+	}
+	rows.Close()
+
+	rows, err = tx.Query(ctx, `
+		SELECT result.decision, COUNT(*)
+		FROM payout_screening_jobs AS job
+		JOIN payouts AS payout ON payout.id = job.payout_id
+		JOIN payout_screening_results AS result ON result.id = job.current_result_id
+		WHERE payout.status = 'pending_review'
+		  AND job.status = 'completed'
+		  AND result.valid_until > CURRENT_TIMESTAMP
+		  AND result.decision IN ('deny', 'review')
+		GROUP BY result.decision
+	`)
+	if err != nil {
+		return fmt.Errorf("查询地址筛查决策指标: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var decision string
+		var count int64
+		if err := rows.Scan(&decision, &count); err != nil {
+			return fmt.Errorf("读取地址筛查决策指标: %w", err)
+		}
+		decisions[decision] = count
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历地址筛查决策指标: %w", err)
 	}
 	return nil
 }

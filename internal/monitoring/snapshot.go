@@ -8,6 +8,8 @@ var (
 	outboxStatuses         = []string{"pending", "processing", "dead"}
 	reconciliationKinds    = []string{"ledger_integrity", "wallet_assets"}
 	reconciliationSeverity = []string{"warning", "critical"}
+	screeningJobStatuses   = []string{"pending", "processing"}
+	screeningDecisions     = []string{"deny", "review"}
 )
 
 // CountAndOldest 表示某状态的数量和最早记录创建时间 Unix 秒。
@@ -30,6 +32,8 @@ type Snapshot struct {
 	IndexerCursors          map[string]CursorSnapshot
 	LastReconciliationRun   map[string]float64
 	LastWalletSnapshot      map[string]float64
+	ScreeningJobs           map[string]CountAndOldest
+	ScreeningDecisions      map[string]int64
 }
 
 // Source 读取一次业务风险快照。

@@ -47,8 +47,9 @@ Implemented components:
 - Custody asset reconciliation between on-chain totals and the ledger checkpoint captured with the same snapshot, with separate shortfall and excess cases
 - Prometheus metrics, liveness probes, and PostgreSQL readiness probes for long-running fund workers
 - A dedicated business-risk monitor with Prometheus alerts for reconciliation findings, payout backlog, Outbox dead letters, stalled indexing, and stale scheduled controls
+- A leased payout-address screening worker with immutable results; missing, non-allow, or expired screening evidence blocks approval
 
-Not yet implemented: automated address screening, wallet sweeping, complete four-layer reconciliation across chain, ledger, in-flight funds, and providers, monitoring dashboards, and a production KMS/HSM/MPC signing backend.
+Not yet implemented: inbound-address screening, wallet sweeping, complete four-layer reconciliation across chain, ledger, in-flight funds, and providers, monitoring dashboards, and a production KMS/HSM/MPC signing backend.
 
 ## Local Development
 
@@ -149,7 +150,7 @@ The worker rejects private, loopback, and link-local targets and does not follow
 
 ## Monitoring and Alerts
 
-The indexer, deposit matcher, payout signer, payout executor, and webhook worker expose these endpoints on `127.0.0.1:9090` by default:
+The indexer, deposit matcher, payout screener, payout signer, payout executor, and webhook worker expose these endpoints on `127.0.0.1:9090` by default:
 
 - `GET /healthz`: process liveness
 - `GET /readyz`: timeout-bounded PostgreSQL readiness
@@ -179,7 +180,34 @@ Load [`configs/prometheus/alerts.yml`](configs/prometheus/alerts.yml) into Prome
 
 Approve or reject a pending payout:
 
+Payout creation atomically creates an address-screening job. Configure an internal HTTPS provider adapter and start the screening worker first:
+
 ```bash
+export GATEWAY_SCREENING_PROVIDER_URL='https://screening.internal.example'
+export GATEWAY_SCREENING_PROVIDER_NAME='production-adapter'
+export GATEWAY_SCREENING_PROVIDER_BEARER_TOKEN='INJECT_FROM_SECRET_MANAGER'
+go run ./cmd/gateway-payout-screening-worker
+```
+
+The provider must implement `POST /v1/address-screenings`, process `Idempotency-Key` idempotently, and return:
+
+```json
+{
+  "decision": "allow",
+  "reason_codes": ["low_risk"],
+  "provider_reference": "provider-case-id",
+  "checked_at": "2026-09-28T00:00:00Z",
+  "valid_until": "2026-09-29T00:00:00Z"
+}
+```
+
+The core accepts HTTPS only, rejects redirects, bounds response size, and validates decisions, reason codes, timestamps, and maximum validity. It stores a SHA-256 digest of the raw response and an immutable normalized result. Deployments should adapt this contract to Chainalysis, TRM, Elliptic, or another compliance provider; the project does not claim that a local list replaces vendor data or compliance judgment. For private networking, use an mTLS service mesh or equivalent workload identity.
+
+Approval requires a current `allow` result. `deny`, `review`, provider failure, and expired results all fail closed. Operators may still reject a payout and atomically release frozen funds:
+
+```bash
+go run ./cmd/gateway-admin list-payout-screenings --limit 100
+
 go run ./cmd/gateway-admin approve-payout \
   --payout-id '00000000-0000-0000-0000-000000000000' \
   --reviewer 'ops@example.com' \

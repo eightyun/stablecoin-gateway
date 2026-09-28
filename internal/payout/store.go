@@ -222,6 +222,12 @@ func (store *Store) Create(ctx context.Context, request Request) (result CreateR
 	if err != nil {
 		return CreateResult{}, fmt.Errorf("创建出款单: %w", err)
 	}
+	if _, err = databaseTransaction.Exec(ctx, `
+		INSERT INTO payout_screening_jobs (payout_id, network, address, status)
+		VALUES ($1, $2, $3, 'pending')
+	`, details.ID, details.Network, request.DestinationAddress); err != nil {
+		return CreateResult{}, fmt.Errorf("创建出款地址筛查任务: %w", err)
+	}
 	if err = databaseTransaction.Commit(ctx); err != nil {
 		return CreateResult{}, fmt.Errorf("提交创建出款事务: %w", err)
 	}

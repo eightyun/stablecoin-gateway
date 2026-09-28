@@ -47,8 +47,9 @@
 - 链上托管总余额与同次账本检查点的资产对账，区分短款和长款并生成可审计工单
 - 长运行资金 Worker 的 Prometheus 指标、存活探针和 PostgreSQL 就绪探针
 - 独立业务风险监控进程，以及覆盖对账差异、出款积压、Outbox 死信、索引停滞和任务过期的 Prometheus 告警规则
+- 基于租约和不可变结果的出款地址筛查 Worker；筛查缺失、非 allow 或过期时禁止批准
 
-尚未完成：自动地址筛查、归集、包含链上/账本/在途/通道的完整四层对账、监控仪表盘，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
+尚未完成：入金地址筛查、归集、包含链上/账本/在途/通道的完整四层对账、监控仪表盘，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
 
 ## 本地运行
 
@@ -149,7 +150,7 @@ Worker 默认拒绝私网、回环和链路本地目标，且不跟随重定向�
 
 ## 监控与告警
 
-Indexer、充值匹配、出款签名、出款执行和 Webhook Worker 默认在 `127.0.0.1:9090` 暴露：
+Indexer、充值匹配、出款筛查、出款签名、出款执行和 Webhook Worker 默认在 `127.0.0.1:9090` 暴露：
 
 - `GET /healthz`：进程存活探针
 - `GET /readyz`：带超时的 PostgreSQL 就绪探针
@@ -179,7 +180,34 @@ go run ./cmd/gateway-monitor
 
 审批或拒绝待审核出款：
 
+出款创建时会在同一数据库事务中生成地址筛查任务。先配置内部 HTTPS Provider 适配服务并启动 Screening Worker：
+
 ```bash
+export GATEWAY_SCREENING_PROVIDER_URL='https://screening.internal.example'
+export GATEWAY_SCREENING_PROVIDER_NAME='production-adapter'
+export GATEWAY_SCREENING_PROVIDER_BEARER_TOKEN='从密钥管理服务注入'
+go run ./cmd/gateway-payout-screening-worker
+```
+
+Provider 必须实现 `POST /v1/address-screenings`，按 `Idempotency-Key` 幂等处理请求，并返回：
+
+```json
+{
+  "decision": "allow",
+  "reason_codes": ["low_risk"],
+  "provider_reference": "provider-case-id",
+  "checked_at": "2026-09-28T00:00:00Z",
+  "valid_until": "2026-09-29T00:00:00Z"
+}
+```
+
+核心系统只接受 HTTPS、拒绝重定向、限制响应大小，并校验决策枚举、原因码、时间窗口和最长有效期；原始响应仅保存 SHA-256 摘要，规范结果以不可变记录保存。该接口应由部署方适配真实 Chainalysis、TRM、Elliptic 或其他合规供应商，项目本身不声称本地规则可以替代供应商及合规判断。私网部署建议通过 mTLS 服务网格提供工作负载身份。
+
+只有仍在有效期内的 `allow` 结果才能执行批准；`deny`、`review`、Provider 故障和过期结果全部 fail-closed。运营仍可随时拒绝出款并原子解冻：
+
+```bash
+go run ./cmd/gateway-admin list-payout-screenings --limit 100
+
 go run ./cmd/gateway-admin approve-payout \
   --payout-id '00000000-0000-0000-0000-000000000000' \
   --reviewer 'ops@example.com' \

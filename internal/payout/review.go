@@ -37,8 +37,9 @@ const (
 )
 
 var (
-	ErrInvalidReview       = errors.New("出款审批请求无效")
-	ErrPayoutStateConflict = errors.New("出款状态不允许该审批决定")
+	ErrInvalidReview             = errors.New("出款审批请求无效")
+	ErrPayoutStateConflict       = errors.New("出款状态不允许该审批决定")
+	ErrScreeningApprovalRequired = errors.New("出款缺少当前有效的 allow 地址筛查结果")
 )
 
 // ReviewRequest 是一次带审计信息的出款审批请求。
@@ -96,18 +97,28 @@ func (store *Store) Review(ctx context.Context, request ReviewRequest) (result R
 	var merchantID, merchantReference, assetID, network, destinationAddress, amountText, currentStatus string
 	var reviewedBy, reviewReason, unfreezeTransactionID sql.NullString
 	var reviewedAt sql.NullTime
+	var screeningAllowed bool
 	err = databaseTransaction.QueryRow(ctx, `
 		SELECT payout.merchant_id::TEXT, payout.merchant_reference, payout.asset_id,
 		       asset.network, payout.destination_address, payout.amount::TEXT, payout.status,
 		       payout.reviewed_by, payout.review_reason, payout.reviewed_at,
-		       payout.unfreeze_transaction_id::TEXT
+		       payout.unfreeze_transaction_id::TEXT,
+		       COALESCE(
+		           screening.status = 'completed'
+		           AND screening_result.decision = 'allow'
+		           AND screening_result.valid_until > CURRENT_TIMESTAMP,
+		           FALSE
+		       )
 		FROM payouts AS payout
 		JOIN assets AS asset ON asset.id = payout.asset_id
+		LEFT JOIN payout_screening_jobs AS screening ON screening.payout_id = payout.id
+		LEFT JOIN payout_screening_results AS screening_result
+		  ON screening_result.id = screening.current_result_id
 		WHERE payout.id = $1
 		FOR UPDATE OF payout
 	`, request.PayoutID).Scan(
 		&merchantID, &merchantReference, &assetID, &network, &destinationAddress, &amountText, &currentStatus,
-		&reviewedBy, &reviewReason, &reviewedAt, &unfreezeTransactionID,
+		&reviewedBy, &reviewReason, &reviewedAt, &unfreezeTransactionID, &screeningAllowed,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReviewResult{}, ErrPayoutNotFound
@@ -128,6 +139,9 @@ func (store *Store) Review(ctx context.Context, request ReviewRequest) (result R
 			Reason: reviewReason.String, ReviewedAt: reviewedAt.Time,
 			UnfreezeTransactionID: unfreezeTransactionID.String, Changed: false,
 		}, nil
+	}
+	if request.Decision == DecisionApprove && !screeningAllowed {
+		return ReviewResult{}, ErrScreeningApprovalRequired
 	}
 
 	result = ReviewResult{
@@ -159,6 +173,18 @@ func (store *Store) Review(ctx context.Context, request ReviewRequest) (result R
 	}
 	if err != nil {
 		return ReviewResult{}, fmt.Errorf("更新出款审批状态: %w", err)
+	}
+	command, err := databaseTransaction.Exec(ctx, `
+		UPDATE payout_screening_jobs
+		SET status = 'closed', lease_owner = NULL, lease_until = NULL,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE payout_id = $1 AND status IN ('pending', 'processing', 'completed')
+	`, request.PayoutID)
+	if err != nil {
+		return ReviewResult{}, fmt.Errorf("关闭出款地址筛查任务: %w", err)
+	}
+	if command.RowsAffected() != 1 {
+		return ReviewResult{}, ErrPayoutStateConflict
 	}
 	if err = recordPayoutReviewAudit(ctx, databaseTransaction, request, result); err != nil {
 		return ReviewResult{}, err

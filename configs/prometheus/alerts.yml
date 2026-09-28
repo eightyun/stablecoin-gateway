@@ -55,6 +55,42 @@ groups:
           summary: 出款确认时间过长
           description: 最早一笔 confirming 出款创建已超过 15 分钟，请检查节点与链上交易。
 
+      - alert: StablecoinGatewayScreeningWorkerFailures
+        expr: stablecoin_gateway_worker_consecutive_failures{worker="payout-screening"} >= 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 出款地址筛查连续失败
+          description: Screening Worker 已连续至少 3 次无法完成地址筛查。
+
+      - alert: StablecoinGatewayScreeningBacklog
+        expr: stablecoin_gateway_business_payout_screening_jobs > 0 and (time() - stablecoin_gateway_business_payout_screening_oldest_created_timestamp_seconds) > 300
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 出款地址筛查任务积压
+          description: 状态 {{ $labels.status }} 的最早筛查任务创建已超过 5 分钟。
+
+      - alert: StablecoinGatewayScreeningDenied
+        expr: stablecoin_gateway_business_payout_screening_decisions{decision="deny"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 存在被拒绝的出款地址筛查结果
+          description: 当前有 {{ $value }} 笔 deny 出款等待人工拒绝和复核。
+
+      - alert: StablecoinGatewayScreeningReviewRequired
+        expr: stablecoin_gateway_business_payout_screening_decisions{decision="review"} > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 出款地址需要人工复核
+          description: 当前有 {{ $value }} 笔 review 出款等待人工处置。
+
       - alert: StablecoinGatewayIndexerCursorStale
         expr: (time() - stablecoin_gateway_business_indexer_cursor_updated_timestamp_seconds) > 120
         for: 2m

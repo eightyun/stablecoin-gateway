@@ -22,6 +22,9 @@ type Metrics struct {
 	indexerUpdated      *prometheus.Desc
 	reconciliationRun   *prometheus.Desc
 	walletSnapshot      *prometheus.Desc
+	screeningJobs       *prometheus.Desc
+	screeningJobOldest  *prometheus.Desc
+	screeningDecisions  *prometheus.Desc
 }
 
 var _ prometheus.Collector = (*Metrics)(nil)
@@ -66,6 +69,18 @@ func NewMetrics() *Metrics {
 			prometheus.BuildFQName(metricNamespace, "business", "wallet_snapshot_last_capture_timestamp_seconds"),
 			"各活动托管资产最近钱包余额快照时间 Unix 秒；从未执行时为零。", []string{"asset_id"}, nil,
 		),
+		screeningJobs: prometheus.NewDesc(
+			prometheus.BuildFQName(metricNamespace, "business", "payout_screening_jobs"),
+			"当前待处理和处理中的出款地址筛查任务数。", []string{"status"}, nil,
+		),
+		screeningJobOldest: prometheus.NewDesc(
+			prometheus.BuildFQName(metricNamespace, "business", "payout_screening_oldest_created_timestamp_seconds"),
+			"各活动状态最早筛查任务的创建时间 Unix 秒；无记录时为零。", []string{"status"}, nil,
+		),
+		screeningDecisions: prometheus.NewDesc(
+			prometheus.BuildFQName(metricNamespace, "business", "payout_screening_decisions"),
+			"等待人工处置且仍有效的地址筛查 deny/review 决策数。", []string{"decision"}, nil,
+		),
 	}
 }
 
@@ -80,6 +95,9 @@ func (metrics *Metrics) Describe(descriptions chan<- *prometheus.Desc) {
 	descriptions <- metrics.indexerUpdated
 	descriptions <- metrics.reconciliationRun
 	descriptions <- metrics.walletSnapshot
+	descriptions <- metrics.screeningJobs
+	descriptions <- metrics.screeningJobOldest
+	descriptions <- metrics.screeningDecisions
 }
 
 // Collect 从同一个不可变快照生成一轮指标。
@@ -115,6 +133,17 @@ func (metrics *Metrics) Collect(output chan<- prometheus.Metric) {
 	for assetID, timestamp := range metrics.snapshot.LastWalletSnapshot {
 		output <- prometheus.MustNewConstMetric(metrics.walletSnapshot, prometheus.GaugeValue, timestamp, assetID)
 	}
+	for _, status := range screeningJobStatuses {
+		value := metrics.snapshot.ScreeningJobs[status]
+		output <- prometheus.MustNewConstMetric(metrics.screeningJobs, prometheus.GaugeValue, float64(value.Count), status)
+		output <- prometheus.MustNewConstMetric(metrics.screeningJobOldest, prometheus.GaugeValue, value.OldestCreatedUnixTime, status)
+	}
+	for _, decision := range screeningDecisions {
+		output <- prometheus.MustNewConstMetric(
+			metrics.screeningDecisions, prometheus.GaugeValue,
+			float64(metrics.snapshot.ScreeningDecisions[decision]), decision,
+		)
+	}
 }
 
 // Update 以一次锁内替换发布最近成功快照。
@@ -144,6 +173,12 @@ func cloneSnapshot(source Snapshot) Snapshot {
 	}
 	for key, value := range source.LastWalletSnapshot {
 		target.LastWalletSnapshot[key] = value
+	}
+	for key, value := range source.ScreeningJobs {
+		target.ScreeningJobs[key] = value
+	}
+	for key, value := range source.ScreeningDecisions {
+		target.ScreeningDecisions[key] = value
 	}
 	return target
 }

@@ -22,11 +22,17 @@ func TestMetricsUpdateReplacesDynamicLabels(t *testing.T) {
 		},
 		LastReconciliationRun: map[string]float64{"wallet_assets": 400},
 		LastWalletSnapshot:    map[string]float64{"usdt-tron-nile": 500},
+		ScreeningJobs: map[string]CountAndOldest{
+			"pending": {Count: 4, OldestCreatedUnixTime: 600},
+		},
+		ScreeningDecisions: map[string]int64{"deny": 1},
 	})
 	assertGaugeValue(t, registry, "stablecoin_gateway_business_reconciliation_open_cases", map[string]string{"severity": "critical"}, 2)
 	assertGaugeValue(t, registry, "stablecoin_gateway_business_payouts", map[string]string{"status": "confirming"}, 3)
 	assertGaugeValue(t, registry, "stablecoin_gateway_business_indexer_next_height", map[string]string{"network": "tron-nile"}, 42)
 	assertGaugeValue(t, registry, "stablecoin_gateway_business_wallet_snapshot_last_capture_timestamp_seconds", map[string]string{"asset_id": "usdt-tron-nile"}, 500)
+	assertGaugeValue(t, registry, "stablecoin_gateway_business_payout_screening_jobs", map[string]string{"status": "pending"}, 4)
+	assertGaugeValue(t, registry, "stablecoin_gateway_business_payout_screening_decisions", map[string]string{"decision": "deny"}, 1)
 
 	metrics.Update(Snapshot{})
 	if hasLabels(t, registry, "stablecoin_gateway_business_indexer_next_height", map[string]string{"network": "tron-nile"}) {

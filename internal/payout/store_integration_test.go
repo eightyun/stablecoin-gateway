@@ -21,6 +21,7 @@ import (
 	"github.com/eightyun/stablecoin-gateway/internal/deposit"
 	"github.com/eightyun/stablecoin-gateway/internal/identity"
 	"github.com/eightyun/stablecoin-gateway/internal/ledger"
+	"github.com/eightyun/stablecoin-gateway/internal/screening"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -128,6 +129,10 @@ func TestStoreApprovesPayoutIdempotently(t *testing.T) {
 		PayoutID: created.Payout.ID, Decision: DecisionApprove,
 		Reviewer: "risk@example.com", Reason: "manual screening passed",
 	}
+	if _, err := fixture.store.Review(context.Background(), request); !errors.Is(err, ErrScreeningApprovalRequired) {
+		t.Fatalf("未筛查 Review() error = %v", err)
+	}
+	allowPayoutScreening(t, fixture, created.Payout.ID)
 	result, err := fixture.store.Review(context.Background(), request)
 	if err != nil || !result.Changed || result.Status != StatusApproved || result.UnfreezeTransactionID != "" {
 		t.Fatalf("Review() = %+v, %v", result, err)
@@ -203,6 +208,7 @@ func TestStoreSerializesConcurrentPayoutReviews(t *testing.T) {
 		{PayoutID: created.Payout.ID, Decision: DecisionApprove, Reviewer: "approver", Reason: "approved"},
 		{PayoutID: created.Payout.ID, Decision: DecisionReject, Reviewer: "rejector", Reason: "rejected"},
 	}
+	allowPayoutScreening(t, fixture, created.Payout.ID)
 	results := make(chan error, len(requests))
 	var waitGroup sync.WaitGroup
 	for _, request := range requests {
@@ -267,6 +273,7 @@ func TestStoreSigningLeaseTakeoverAndCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
+	allowPayoutScreening(t, fixture, created.Payout.ID)
 	if _, err := fixture.store.Review(context.Background(), ReviewRequest{
 		PayoutID: created.Payout.ID, Decision: DecisionApprove,
 		Reviewer: "risk@example.com", Reason: "approved for signing",
@@ -329,6 +336,7 @@ func TestStoreSigningLeaseTakeoverAndCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建第二笔出款: %v", err)
 	}
+	allowPayoutScreening(t, fixture, secondPayout.Payout.ID)
 	if _, err := fixture.store.Review(context.Background(), ReviewRequest{
 		PayoutID: secondPayout.Payout.ID, Decision: DecisionApprove,
 		Reviewer: "risk@example.com", Reason: "approved for signing",
@@ -531,6 +539,7 @@ func prepareSignedPayout(t *testing.T, fixture payoutFixture, idempotencyKey, re
 	if err != nil {
 		t.Fatalf("创建待执行出款: %v", err)
 	}
+	allowPayoutScreening(t, fixture, created.Payout.ID)
 	if _, err := fixture.store.Review(context.Background(), ReviewRequest{
 		PayoutID: created.Payout.ID, Decision: DecisionApprove,
 		Reviewer: "risk@example.com", Reason: "approved for execution",
@@ -733,4 +742,29 @@ func payoutUUID(t *testing.T) string {
 		t.Fatalf("生成 UUID: %v", err)
 	}
 	return value
+}
+
+func allowPayoutScreening(t *testing.T, fixture payoutFixture, payoutID string) {
+	t.Helper()
+	store, err := screening.NewStore(fixture.pool)
+	if err != nil {
+		t.Fatalf("screening.NewStore() error = %v", err)
+	}
+	for {
+		claim, err := store.Claim(context.Background(), "payout-test-screening", time.Minute)
+		if err != nil {
+			t.Fatalf("领取测试筛查任务: %v", err)
+		}
+		now := time.Now().UTC()
+		if err := store.Complete(context.Background(), claim, screening.Result{
+			Provider: "integration-test", Decision: screening.DecisionAllow,
+			ReasonCodes: []string{"test_allow"}, ProviderReference: "ref-" + claim.PayoutID,
+			ResponseHash: strings.Repeat("a", 64), CheckedAt: now, ValidUntil: now.Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("完成测试筛查任务: %v", err)
+		}
+		if claim.PayoutID == payoutID {
+			return
+		}
+	}
 }
