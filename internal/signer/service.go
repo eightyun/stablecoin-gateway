@@ -45,6 +45,7 @@ type Service struct {
 }
 
 var _ tron.TransferSigner = (*Service)(nil)
+var _ tron.SweepSigner = (*Service)(nil)
 
 // NewService 创建测试网签名服务。文件密钥后端明确拒绝主网。
 func NewService(config ServiceConfig, builder tron.TransferBuilder, key DigestSigner, store *FileStore) (*Service, error) {
@@ -108,6 +109,19 @@ func (service *Service) SignTransfer(ctx context.Context, request tron.TransferS
 	fingerprint := sha256.Sum256(fingerprintPayload)
 	return service.store.Resolve(ctx, request.RequestID, hex.EncodeToString(fingerprint[:]), func() (tron.SignedTransaction, error) {
 		return service.buildAndSign(ctx, request)
+	})
+}
+
+// SignSweep 仅允许测试网 signer 为自身固定持有的来源地址签署归集交易。
+func (service *Service) SignSweep(ctx context.Context, request tron.SweepSignRequest) (tron.SignedTransaction, error) {
+	source, err := tron.NormalizeAddressBase58(request.SourceAddress)
+	if err != nil || source != service.ownerAddress {
+		return tron.SignedTransaction{}, ErrPolicyDenied
+	}
+	return service.SignTransfer(ctx, tron.TransferSignRequest{
+		RequestID: request.RequestID, Network: request.Network,
+		ContractAddress: request.ContractAddress, DestinationAddress: request.DestinationAddress,
+		Amount: request.Amount,
 	})
 }
 

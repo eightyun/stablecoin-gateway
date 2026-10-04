@@ -43,9 +43,21 @@ func validatePolicy(policy Policy) error {
 	if policy.AssetID == "" || policy.MaxSnapshotAge <= 0 {
 		return ErrInvalidPolicy
 	}
-	amount, ok := new(big.Int).SetString(policy.MinimumAmount, 10)
-	if !ok || amount.Sign() <= 0 || len(amount.String()) > 78 {
+	if _, ok := parsePositiveAmount(policy.MinimumAmount); !ok {
 		return ErrInvalidPolicy
 	}
 	return nil
+}
+
+func parsePositiveAmount(value string) (*big.Int, bool) {
+	if value == "" || len(value) > 78 || (len(value) > 1 && value[0] == '0') {
+		return nil, false
+	}
+	for _, digit := range value {
+		if digit < '0' || digit > '9' {
+			return nil, false
+		}
+	}
+	amount, ok := new(big.Int).SetString(value, 10)
+	return amount, ok && amount.Sign() > 0 && amount.BitLen() <= 256
 }

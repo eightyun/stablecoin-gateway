@@ -49,9 +49,9 @@
 - 独立业务风险监控进程，以及覆盖对账差异、出款积压、Outbox 死信、索引停滞和任务过期的 Prometheus 告警规则
 - 基于租约和不可变结果的出款地址筛查 Worker；筛查缺失、非 allow 或过期时禁止批准
 - 基于已固化链事件的入金来源地址筛查 Worker；只有有效 allow 才能入账，deny/review 自动隔离
-- 基于固化钱包快照和完整入金来源证明的归集 Planner；只生成不可变计划，尚不签名或广播
+- 基于固化钱包快照和完整入金来源证明的归集 Planner，以及带余额预检、租约栅栏和独立 signer 接口的签名 Worker
 
-尚未完成：归集签名/广播/确认执行、包含链上/账本/在途/通道的完整四层对账、监控仪表盘，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
+尚未完成：归集广播/确认执行、包含链上/账本/在途/通道的完整四层对账、监控仪表盘，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
 
 ## 本地运行
 
@@ -105,6 +105,20 @@ go run ./cmd/gateway-sweep-planner
 ```
 
 Planner 要求资产恰好有一个活动热钱包、索引游标已越过快照高度，并验证截至该高度的全部入金事件均已成功匹配且入金地址筛查结果为 `allow`；事件金额总和还必须与地址快照余额完全一致。任一证据缺失都会跳过该地址。当前进程只写不可变 `sweep_plans`，不读取私钥、不广播、不修改账本；在归集执行器上线前，这些计划不会移动资金。
+
+配置隔离 signer 并启动归集签名 Worker：
+
+```bash
+export GATEWAY_TRON_NETWORK='tron-nile'
+export GATEWAY_SWEEP_TRON_SOLIDITY_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_SWEEP_SIGNER_URL='https://signer.internal.example'
+export GATEWAY_SWEEP_SIGNER_BEARER_TOKEN='从密钥管理服务注入'
+export GATEWAY_SWEEP_SIGNER_MAX_FEE_LIMIT='100000000'
+
+go run ./cmd/gateway-sweep-signing-worker
+```
+
+Worker 领取计划后会在同一固化链头前后读取来源余额，余额低于计划金额或读取期间链头变化时不会签名。归集 signer 必须实现 `POST /v1/tron/sweeps:sign`，请求显式包含 `source_address`，并以计划 UUID 幂等返回同一交易。客户端会重新解析交易并核对来源、合约、热钱包目标、金额、费用和有效期。成功后只进入 `ready_for_broadcast`，本阶段仍不会广播或修改账本。仓库测试网 signer 支持该接口，但固定只允许自身私钥对应的来源地址；生产环境需要由 KMS/HSM/MPC 后端执行来源地址授权和密钥选择。
 
 登记参与快照的热钱包、冷钱包或手续费钱包：
 
@@ -165,7 +179,7 @@ Worker 默认拒绝私网、回环和链路本地目标，且不跟随重定向�
 
 ## 监控与告警
 
-Indexer、入金筛查、充值匹配、归集规划、出款筛查、出款签名、出款执行和 Webhook Worker 默认在 `127.0.0.1:9090` 暴露：
+Indexer、入金筛查、充值匹配、归集规划、归集签名、出款筛查、出款签名、出款执行和 Webhook Worker 默认在 `127.0.0.1:9090` 暴露：
 
 - `GET /healthz`：进程存活探针
 - `GET /readyz`：带超时的 PostgreSQL 就绪探针
@@ -319,7 +333,7 @@ export GATEWAY_TESTNET_SIGNER_MAX_AMOUNT='10000000'
 go run ./cmd/gateway-testnet-signer
 ```
 
-签名服务固定使用 HTTPS 和 Bearer 鉴权，并在私钥使用前验证它与付款地址一致。它只签署单笔白名单 TRC20 `transfer`，对网络、合约、收款地址、金额、费用和有效期做二次校验；结果以请求 UUID 持久化后才响应。当前文件存储只支持单实例，部署多个 signer 实例前必须替换为具备一致性约束的共享存储。
+签名服务固定使用 HTTPS 和 Bearer 鉴权，并在私钥使用前验证它与付款地址一致。它只签署单笔白名单 TRC20 `transfer`；归集端点还要求 `source_address` 必须等于该测试 signer 的付款地址。服务会对网络、合约、收款地址、金额、费用和有效期做二次校验，结果以请求 UUID 持久化后才响应。当前文件存储只支持单实例，部署多个 signer 实例前必须替换为具备一致性约束的共享存储。
 
 配置 FullNode、SolidityNode 并启动出款执行 Worker：
 

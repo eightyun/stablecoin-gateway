@@ -49,9 +49,9 @@ Implemented components:
 - A dedicated business-risk monitor with Prometheus alerts for reconciliation findings, payout backlog, Outbox dead letters, stalled indexing, and stale scheduled controls
 - A leased payout-address screening worker with immutable results; missing, non-allow, or expired screening evidence blocks approval
 - A finalized-event-driven inbound screening worker; only a current allow can be credited, while deny/review results are quarantined
-- A sweep planner backed by finalized wallet snapshots and complete inbound provenance; it creates immutable plans but does not sign or broadcast yet
+- A finalized-snapshot sweep planner plus a signing worker with balance preflight, fenced leases, and a dedicated signer endpoint
 
-Not yet implemented: sweep signing/broadcast/finality execution, complete four-layer reconciliation across chain, ledger, in-flight funds, and providers, monitoring dashboards, and a production KMS/HSM/MPC signing backend.
+Not yet implemented: sweep broadcast/finality execution, complete four-layer reconciliation across chain, ledger, in-flight funds, and providers, monitoring dashboards, and a production KMS/HSM/MPC signing backend.
 
 ## Local Development
 
@@ -105,6 +105,20 @@ go run ./cmd/gateway-sweep-planner
 ```
 
 The planner requires exactly one active hot wallet, an indexer cursor beyond the snapshot height, and proof that every inbound event through that height was matched and allowed by inbound address screening. The event sum must exactly equal the snapshotted address balance. Missing evidence fails closed. The current process only writes immutable `sweep_plans`; it never reads private keys, broadcasts transactions, or changes the ledger, so no funds move until the sweep executor is implemented.
+
+Configure an isolated signer and start the sweep-signing worker:
+
+```bash
+export GATEWAY_TRON_NETWORK='tron-nile'
+export GATEWAY_SWEEP_TRON_SOLIDITY_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_SWEEP_SIGNER_URL='https://signer.internal.example'
+export GATEWAY_SWEEP_SIGNER_BEARER_TOKEN='INJECT_FROM_A_SECRET_MANAGER'
+export GATEWAY_SWEEP_SIGNER_MAX_FEE_LIMIT='100000000'
+
+go run ./cmd/gateway-sweep-signing-worker
+```
+
+After claiming a plan, the worker reads the source balance between two identical finalized heads. It refuses to sign if the balance is below the planned amount or the head changes. The sweep signer must implement `POST /v1/tron/sweeps:sign`, explicitly bind `source_address`, and idempotently return the same transaction for the plan UUID. The client reparses the transaction and verifies its source, contract, hot-wallet destination, amount, fee, and lifetime. Success only moves the execution to `ready_for_broadcast`; this stage still does not broadcast or modify the ledger. The repository testnet signer supports this endpoint but only for its single configured source key; production deployments need a KMS/HSM/MPC backend that authorizes the source address and selects its key.
 
 Register a hot, cold, or fee wallet that must be included in snapshots:
 
@@ -165,7 +179,7 @@ The worker rejects private, loopback, and link-local targets and does not follow
 
 ## Monitoring and Alerts
 
-The indexer, inbound screener, deposit matcher, sweep planner, payout screener, payout signer, payout executor, and webhook worker expose these endpoints on `127.0.0.1:9090` by default:
+The indexer, inbound screener, deposit matcher, sweep planner, sweep signer, payout screener, payout signer, payout executor, and webhook worker expose these endpoints on `127.0.0.1:9090` by default:
 
 - `GET /healthz`: process liveness
 - `GET /readyz`: timeout-bounded PostgreSQL readiness

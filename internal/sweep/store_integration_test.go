@@ -4,6 +4,9 @@ package sweep
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -11,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eightyun/stablecoin-gateway/internal/chain/tron"
 	"github.com/eightyun/stablecoin-gateway/internal/database"
 	"github.com/eightyun/stablecoin-gateway/internal/identity"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -32,6 +36,52 @@ func TestStoreCreatesImmutableSweepPlan(t *testing.T) {
 	if _, err := pool.Exec(context.Background(), `UPDATE sweep_plans SET amount = 99 WHERE id = $1`, plan.ID); err == nil ||
 		!strings.Contains(err.Error(), "sweep plans are immutable") {
 		t.Fatalf("修改不可变归集计划 error = %v", err)
+	}
+}
+
+func TestStoreLeasesAndCompletesSweepSigning(t *testing.T) {
+	store, pool, policy := newSweepFixture(t, "allow", "100", time.Hour)
+	plan, err := store.PlanNext(context.Background(), policy)
+	if err != nil {
+		t.Fatalf("PlanNext() error = %v", err)
+	}
+	first, err := store.ClaimSigning(context.Background(), "signer-1", "sweep-network-"+strings.TrimPrefix(policy.AssetID, "sweep-"), 20*time.Millisecond)
+	if err != nil || first.PlanID != plan.ID || first.LeaseEpoch != 1 || first.Amount != "100" {
+		t.Fatalf("第一次 ClaimSigning() = %+v, %v", first, err)
+	}
+	if _, err := store.ClaimSigning(context.Background(), "signer-2", first.Network, time.Minute); !errors.Is(err, ErrNoSigningJob) {
+		t.Fatalf("租约占用期间 ClaimSigning() error = %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	second, err := store.ClaimSigning(context.Background(), "signer-2", first.Network, time.Minute)
+	if err != nil || second.PlanID != plan.ID || second.LeaseEpoch != 2 {
+		t.Fatalf("接管 ClaimSigning() = %+v, %v", second, err)
+	}
+	transaction := sweepSignedTransaction(t)
+	observation := BalanceObservation{Balance: "100", BlockHeight: 12, BlockHash: strings.Repeat("d", 64)}
+	if err := store.CompleteSigning(context.Background(), first, observation, transaction); !errors.Is(err, ErrSigningLeaseLost) {
+		t.Fatalf("旧租约 CompleteSigning() error = %v", err)
+	}
+	if err := store.ReleaseSigning(context.Background(), second, "retry_test"); err != nil {
+		t.Fatalf("ReleaseSigning() error = %v", err)
+	}
+	third, err := store.ClaimSigning(context.Background(), "signer-3", first.Network, time.Minute)
+	if err != nil || third.LeaseEpoch != 3 {
+		t.Fatalf("重试 ClaimSigning() = %+v, %v", third, err)
+	}
+	if err := store.CompleteSigning(context.Background(), third, observation, transaction); err != nil {
+		t.Fatalf("CompleteSigning() error = %v", err)
+	}
+	var status, transactionID string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT status, transaction_id FROM sweep_executions WHERE plan_id = $1
+	`, plan.ID).Scan(&status, &transactionID); err != nil || status != "ready_for_broadcast" || transactionID != transaction.ID {
+		t.Fatalf("执行状态 status=%s transaction=%s error=%v", status, transactionID, err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE sweep_executions SET transaction_id = $2 WHERE plan_id = $1
+	`, plan.ID, strings.Repeat("e", 64)); err == nil || !strings.Contains(err.Error(), "signed sweep transaction is immutable") {
+		t.Fatalf("修改签名交易 error=%v", err)
 	}
 }
 
@@ -243,4 +293,25 @@ func sweepUUID(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return value
+}
+
+func sweepSignedTransaction(t *testing.T) tron.SignedTransaction {
+	t.Helper()
+	rawData := []byte("sweep-signing-integration")
+	digest := sha256.Sum256(rawData)
+	transactionID := hex.EncodeToString(digest[:])
+	now := time.Now().UTC()
+	payload, err := json.Marshal(map[string]any{
+		"txID": transactionID,
+		"raw_data": map[string]any{
+			"contract":  []any{map[string]any{"type": "TriggerSmartContract"}},
+			"timestamp": now.UnixMilli(), "expiration": now.Add(time.Minute).UnixMilli(),
+		},
+		"raw_data_hex": hex.EncodeToString(rawData),
+		"signature":    []string{strings.Repeat("a", 130)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tron.SignedTransaction{ID: transactionID, Payload: payload}
 }

@@ -57,6 +57,36 @@ func TestClientSignsTransferOverHTTPS(t *testing.T) {
 	}
 }
 
+func TestClientSignsSweepWithExplicitSource(t *testing.T) {
+	responseBody, testTxID := signedTransferResponse(t, testOtherAddress, "1000000")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/signer/v1/tron/sweeps:sign" {
+			t.Fatalf("请求 = %s %s", request.Method, request.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil ||
+			body["source_address"] != testAddressHex || body["destination_address"] == testAddressHex {
+			t.Fatalf("请求体 = %+v, %v", body, err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write(responseBody)
+	}))
+	defer server.Close()
+	config := testClientConfig(server.URL + "/signer")
+	config.ExpectedOwnerAddress = ""
+	client, err := NewSweep(config, server.Client())
+	if err != nil {
+		t.Fatalf("NewSweep() error = %v", err)
+	}
+	transaction, err := client.SignSweep(context.Background(), tron.SweepSignRequest{
+		RequestID: testRequestID, Network: "tron-nile", SourceAddress: testAddress,
+		ContractAddress: testContract, DestinationAddress: testOtherAddress, Amount: "1000000",
+	})
+	if err != nil || transaction.ID != testTxID {
+		t.Fatalf("SignSweep() = %+v, %v", transaction, err)
+	}
+}
+
 func TestClientTrustsConfiguredCA(t *testing.T) {
 	responseBody, testTxID := signedTransferResponse(t, testAddress, "1000000")
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {

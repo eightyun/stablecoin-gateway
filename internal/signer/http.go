@@ -25,13 +25,18 @@ type transferSigner interface {
 	SignTransfer(context.Context, tron.TransferSignRequest) (tron.SignedTransaction, error)
 }
 
+type sweepSigner interface {
+	SignSweep(context.Context, tron.SweepSignRequest) (tron.SignedTransaction, error)
+}
+
 type httpHandler struct {
 	signer              transferSigner
+	sweepSigner         sweepSigner
 	authorization       string
 	maxRequestBodyBytes int64
 }
 
-// NewHTTPHandler 创建仅暴露单一签名端点的 HTTP Handler。
+// NewHTTPHandler 创建受鉴权保护的转账与归集签名 HTTP Handler。
 func NewHTTPHandler(config HTTPConfig, service transferSigner) (http.Handler, error) {
 	token := strings.TrimSpace(config.BearerToken)
 	if service == nil || token == "" || len(token) > 4096 || config.MaxRequestBodyBytes < 0 {
@@ -49,15 +54,18 @@ func NewHTTPHandler(config HTTPConfig, service transferSigner) (http.Handler, er
 	if maxBytes < 1024 || maxBytes > 1<<20 {
 		return nil, ErrInvalidConfig
 	}
+	sweepService, _ := service.(sweepSigner)
 	return &httpHandler{
 		signer: service, authorization: "Bearer " + token, maxRequestBodyBytes: maxBytes,
+		sweepSigner: sweepService,
 	}, nil
 }
 
 func (handler *httpHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	response.Header().Set("Content-Type", "application/json")
 	response.Header().Set("Cache-Control", "no-store")
-	if request.URL.Path != "/v1/tron/transfers:sign" || request.URL.RawQuery != "" {
+	if (request.URL.Path != "/v1/tron/transfers:sign" && request.URL.Path != "/v1/tron/sweeps:sign") ||
+		request.URL.RawQuery != "" {
 		writeError(response, http.StatusNotFound, "not_found")
 		return
 	}
@@ -81,6 +89,14 @@ func (handler *httpHandler) ServeHTTP(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusRequestEntityTooLarge, "request_too_large")
 		return
 	}
+	if request.URL.Path == "/v1/tron/sweeps:sign" {
+		handler.handleSweep(response, request, body)
+		return
+	}
+	handler.handleTransfer(response, request, body)
+}
+
+func (handler *httpHandler) handleTransfer(response http.ResponseWriter, request *http.Request, body []byte) {
 	var input struct {
 		RequestID          string `json:"request_id"`
 		Network            string `json:"network"`
@@ -99,19 +115,61 @@ func (handler *httpHandler) ServeHTTP(response http.ResponseWriter, request *htt
 		RequestID: input.RequestID, Network: input.Network, ContractAddress: input.ContractAddress,
 		DestinationAddress: input.DestinationAddress, Amount: input.Amount,
 	})
-	if err != nil {
-		switch {
-		case errors.Is(err, ErrInvalidRequest):
-			writeError(response, http.StatusBadRequest, "invalid_request")
-		case errors.Is(err, ErrPolicyDenied):
-			writeError(response, http.StatusUnprocessableEntity, "policy_denied")
-		case errors.Is(err, ErrIdempotencyConflict):
-			writeError(response, http.StatusConflict, "idempotency_conflict")
-		default:
-			writeError(response, http.StatusInternalServerError, "signing_failed")
-		}
+	if writeSigningError(response, err) {
 		return
 	}
+	writeTransaction(response, transaction)
+}
+
+func (handler *httpHandler) handleSweep(response http.ResponseWriter, request *http.Request, body []byte) {
+	if handler.sweepSigner == nil {
+		writeError(response, http.StatusNotFound, "not_found")
+		return
+	}
+	var input struct {
+		RequestID          string `json:"request_id"`
+		Network            string `json:"network"`
+		SourceAddress      string `json:"source_address"`
+		ContractAddress    string `json:"contract_address"`
+		DestinationAddress string `json:"destination_address"`
+		Amount             string `json:"amount"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || ensureEOF(decoder) != nil ||
+		request.Header.Get("Idempotency-Key") != input.RequestID {
+		writeError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	transaction, err := handler.sweepSigner.SignSweep(request.Context(), tron.SweepSignRequest{
+		RequestID: input.RequestID, Network: input.Network, SourceAddress: input.SourceAddress,
+		ContractAddress: input.ContractAddress, DestinationAddress: input.DestinationAddress,
+		Amount: input.Amount,
+	})
+	if writeSigningError(response, err) {
+		return
+	}
+	writeTransaction(response, transaction)
+}
+
+func writeSigningError(response http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	switch {
+	case errors.Is(err, ErrInvalidRequest):
+		writeError(response, http.StatusBadRequest, "invalid_request")
+	case errors.Is(err, ErrPolicyDenied):
+		writeError(response, http.StatusUnprocessableEntity, "policy_denied")
+	case errors.Is(err, ErrIdempotencyConflict):
+		writeError(response, http.StatusConflict, "idempotency_conflict")
+	default:
+		writeError(response, http.StatusInternalServerError, "signing_failed")
+	}
+	return true
+}
+
+func writeTransaction(response http.ResponseWriter, transaction tron.SignedTransaction) {
 	response.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(response).Encode(struct {
 		TransactionID     string          `json:"transaction_id"`

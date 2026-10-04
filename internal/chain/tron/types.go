@@ -119,6 +119,22 @@ type TransferSigner interface {
 	SignTransfer(ctx context.Context, request TransferSignRequest) (SignedTransaction, error)
 }
 
+// SweepSignRequest 是交给隔离签名服务的托管地址归集请求。
+// SourceAddress 必须由签名服务映射到已授权的 KMS/HSM/MPC 密钥。
+type SweepSignRequest struct {
+	RequestID          string
+	Network            string
+	SourceAddress      string
+	ContractAddress    string
+	DestinationAddress string
+	Amount             string
+}
+
+// SweepSigner 签署来源地址显式受约束的托管归集交易。
+type SweepSigner interface {
+	SignSweep(ctx context.Context, request SweepSignRequest) (SignedTransaction, error)
+}
+
 // Reader 提供链头、固化头、按高度重扫和按交易 ID 恢复所需的读取能力。
 type Reader interface {
 	Head(ctx context.Context) (Header, error)

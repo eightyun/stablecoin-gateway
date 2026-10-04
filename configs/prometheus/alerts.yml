@@ -136,6 +136,15 @@ groups:
           summary: 归集规划连续失败
           description: Sweep Planner 已连续至少 3 次无法完成安全归集规划，请检查快照、热钱包配置和数据库状态。
 
+      - alert: StablecoinGatewaySweepSigningFailures
+        expr: stablecoin_gateway_worker_consecutive_failures{worker="sweep-signing"} >= 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 归集签名连续失败
+          description: Sweep Signing Worker 已连续至少 3 次无法完成余额预检或隔离签名，请检查来源余额、节点和 signer。
+
       - alert: StablecoinGatewayIndexerCursorStale
         expr: (time() - stablecoin_gateway_business_indexer_cursor_updated_timestamp_seconds) > 120
         for: 2m

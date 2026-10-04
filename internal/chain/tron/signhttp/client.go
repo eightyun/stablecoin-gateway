@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"os"
@@ -49,6 +50,7 @@ type Config struct {
 // Client 只传递语义化转账请求，不持有私钥。
 type Client struct {
 	endpoint               string
+	mode                   string
 	bearerToken            string
 	maxResponseBytes       int64
 	expectedOwnerAddress   string
@@ -58,9 +60,19 @@ type Client struct {
 }
 
 var _ tron.TransferSigner = (*Client)(nil)
+var _ tron.SweepSigner = (*Client)(nil)
 
 // New 创建远程签名客户端。自定义 HTTP Client 可用于注入 mTLS Transport。
 func New(config Config, httpClient *http.Client) (*Client, error) {
+	return newClient(config, httpClient, "transfer")
+}
+
+// NewSweep 创建来源地址由每个请求显式指定的归集签名客户端。
+func NewSweep(config Config, httpClient *http.Client) (*Client, error) {
+	return newClient(config, httpClient, "sweep")
+}
+
+func newClient(config Config, httpClient *http.Client, mode string) (*Client, error) {
 	baseURL, err := url.Parse(strings.TrimSpace(config.BaseURL))
 	token := strings.TrimSpace(config.BearerToken)
 	ownerAddress := strings.TrimSpace(config.ExpectedOwnerAddress)
@@ -68,10 +80,15 @@ func New(config Config, httpClient *http.Client) (*Client, error) {
 	config.ClientCertificateFile = strings.TrimSpace(config.ClientCertificateFile)
 	config.ClientKeyFile = strings.TrimSpace(config.ClientKeyFile)
 	clientIdentityConfigured := config.ClientCertificateFile != "" || config.ClientKeyFile != ""
-	_, ownerErr := tron.NormalizeAddressHex(ownerAddress)
+	var ownerErr error
+	if mode == "transfer" {
+		_, ownerErr = tron.NormalizeAddressHex(ownerAddress)
+	}
 	if err != nil || baseURL.Scheme != "https" || baseURL.Host == "" || baseURL.User != nil ||
 		baseURL.RawQuery != "" || baseURL.Fragment != "" || token == "" || len(token) > 4096 ||
-		ownerErr != nil || config.MaxFeeLimit <= 0 || config.MaxTransactionLifetime <= minimumRemainingLifetime ||
+		(mode != "transfer" && mode != "sweep") || ownerErr != nil ||
+		(mode == "sweep" && ownerAddress != "") || config.MaxFeeLimit <= 0 ||
+		config.MaxTransactionLifetime <= minimumRemainingLifetime ||
 		config.MaxResponseBytes < 0 ||
 		(clientIdentityConfigured && (config.ClientCertificateFile == "" || config.ClientKeyFile == "")) ||
 		(httpClient != nil && (config.CAFile != "" || clientIdentityConfigured)) {
@@ -89,7 +106,11 @@ func New(config Config, httpClient *http.Client) (*Client, error) {
 	if maxResponseBytes < 1024 || maxResponseBytes > 16<<20 {
 		return nil, ErrInvalidConfig
 	}
-	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/v1/tron/transfers:sign"
+	endpointPath := "/v1/tron/transfers:sign"
+	if mode == "sweep" {
+		endpointPath = "/v1/tron/sweeps:sign"
+	}
+	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + endpointPath
 	if httpClient == nil {
 		httpClient, err = secureHTTPClient(config)
 		if err != nil {
@@ -101,7 +122,7 @@ func New(config Config, httpClient *http.Client) (*Client, error) {
 		return http.ErrUseLastResponse
 	}
 	return &Client{
-		endpoint: baseURL.String(), bearerToken: token,
+		endpoint: baseURL.String(), mode: mode, bearerToken: token,
 		expectedOwnerAddress: ownerAddress, maxFeeLimit: config.MaxFeeLimit,
 		maxTransactionLifetime: config.MaxTransactionLifetime,
 		maxResponseBytes:       maxResponseBytes, httpClient: &configuredHTTPClient,
@@ -145,6 +166,9 @@ func (client *Client) SignTransfer(
 	ctx context.Context,
 	request tron.TransferSignRequest,
 ) (tron.SignedTransaction, error) {
+	if client.mode != "transfer" {
+		return tron.SignedTransaction{}, ErrInvalidRequest
+	}
 	request = normalizeRequest(request)
 	if err := validateRequest(request); err != nil {
 		return tron.SignedTransaction{}, err
@@ -172,6 +196,60 @@ func (client *Client) SignTransfer(
 	if err != nil {
 		return tron.SignedTransaction{}, fmt.Errorf("编码远程签名请求: %w", err)
 	}
+	return client.sign(ctx, request.RequestID, body, tron.TransferTransactionExpectation{
+		OwnerAddress: client.expectedOwnerAddress, ContractAddress: request.ContractAddress,
+		DestinationAddress: request.DestinationAddress, Amount: request.Amount,
+	})
+}
+
+// SignSweep 请求隔离服务为指定托管来源地址签署归集交易。
+func (client *Client) SignSweep(ctx context.Context, request tron.SweepSignRequest) (tron.SignedTransaction, error) {
+	if client.mode != "sweep" {
+		return tron.SignedTransaction{}, ErrInvalidRequest
+	}
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	request.Network = strings.TrimSpace(request.Network)
+	request.Amount = strings.TrimSpace(request.Amount)
+	var err error
+	request.SourceAddress, err = tron.NormalizeAddressHex(request.SourceAddress)
+	if err != nil {
+		return tron.SignedTransaction{}, ErrInvalidRequest
+	}
+	request.ContractAddress, err = tron.NormalizeAddressHex(request.ContractAddress)
+	if err != nil {
+		return tron.SignedTransaction{}, ErrInvalidRequest
+	}
+	request.DestinationAddress, err = tron.NormalizeAddressHex(request.DestinationAddress)
+	if err != nil || validateCommonRequest(request.RequestID, request.Network, request.Amount) != nil {
+		return tron.SignedTransaction{}, ErrInvalidRequest
+	}
+	body, err := json.Marshal(struct {
+		RequestID          string `json:"request_id"`
+		Network            string `json:"network"`
+		SourceAddress      string `json:"source_address"`
+		ContractAddress    string `json:"contract_address"`
+		DestinationAddress string `json:"destination_address"`
+		Amount             string `json:"amount"`
+	}{
+		RequestID: request.RequestID, Network: request.Network, SourceAddress: request.SourceAddress,
+		ContractAddress: request.ContractAddress, DestinationAddress: request.DestinationAddress,
+		Amount: request.Amount,
+	})
+	if err != nil {
+		return tron.SignedTransaction{}, fmt.Errorf("编码远程归集签名请求: %w", err)
+	}
+	return client.sign(ctx, request.RequestID, body, tron.TransferTransactionExpectation{
+		OwnerAddress: request.SourceAddress, ContractAddress: request.ContractAddress,
+		DestinationAddress: request.DestinationAddress, Amount: request.Amount,
+	})
+}
+
+func (client *Client) sign(
+	ctx context.Context,
+	requestID string,
+	body []byte,
+	expectation tron.TransferTransactionExpectation,
+) (tron.SignedTransaction, error) {
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, client.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return tron.SignedTransaction{}, fmt.Errorf("创建远程签名请求: %w", err)
@@ -179,7 +257,7 @@ func (client *Client) SignTransfer(
 	httpRequest.Header.Set("Authorization", "Bearer "+client.bearerToken)
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "application/json")
-	httpRequest.Header.Set("Idempotency-Key", request.RequestID)
+	httpRequest.Header.Set("Idempotency-Key", requestID)
 	response, err := client.httpClient.Do(httpRequest)
 	if err != nil {
 		return tron.SignedTransaction{}, fmt.Errorf("调用远程签名服务: %w", err)
@@ -200,12 +278,12 @@ func (client *Client) SignTransfer(
 	if err != nil {
 		return tron.SignedTransaction{}, err
 	}
-	if err := tron.ValidateSignedTransferTransaction(transaction, tron.TransferTransactionExpectation{
-		OwnerAddress: client.expectedOwnerAddress, ContractAddress: request.ContractAddress,
-		DestinationAddress: request.DestinationAddress, Amount: request.Amount, Now: time.Now().UTC(),
-		MaxFeeLimit: client.maxFeeLimit, MaxLifetime: client.maxTransactionLifetime,
-		MinRemainingLifetime: minimumRemainingLifetime, MaxFutureSkew: maximumFutureSkew,
-	}); err != nil {
+	expectation.Now = time.Now().UTC()
+	expectation.MaxFeeLimit = client.maxFeeLimit
+	expectation.MaxLifetime = client.maxTransactionLifetime
+	expectation.MinRemainingLifetime = minimumRemainingLifetime
+	expectation.MaxFutureSkew = maximumFutureSkew
+	if err := tron.ValidateSignedTransferTransaction(transaction, expectation); err != nil {
 		return tron.SignedTransaction{}, ErrInvalidResponse
 	}
 	return transaction, nil
@@ -244,10 +322,8 @@ func normalizeRequest(request tron.TransferSignRequest) tron.TransferSignRequest
 }
 
 func validateRequest(request tron.TransferSignRequest) error {
-	if request.RequestID == "" || len(request.RequestID) > 128 ||
-		(request.Network != "tron-nile" && request.Network != "tron-shasta" && request.Network != "tron-mainnet") ||
-		request.ContractAddress == "" || len(request.ContractAddress) > 128 || request.Amount == "" ||
-		len(request.Amount) > 19 || request.Amount[0] == '0' {
+	if validateCommonRequest(request.RequestID, request.Network, request.Amount) != nil ||
+		request.ContractAddress == "" || len(request.ContractAddress) > 128 {
 		return ErrInvalidRequest
 	}
 	if _, err := tron.NormalizeAddressHex(request.DestinationAddress); err != nil {
@@ -260,6 +336,19 @@ func validateRequest(request tron.TransferSignRequest) error {
 		if digit < '0' || digit > '9' {
 			return ErrInvalidRequest
 		}
+	}
+	return nil
+}
+
+func validateCommonRequest(requestID, network, amount string) error {
+	if requestID == "" || len(requestID) > 128 ||
+		(network != "tron-nile" && network != "tron-shasta" && network != "tron-mainnet") ||
+		amount == "" || len(amount) > 78 || (len(amount) > 1 && amount[0] == '0') {
+		return ErrInvalidRequest
+	}
+	value, ok := new(big.Int).SetString(amount, 10)
+	if !ok || value.Sign() <= 0 || value.BitLen() > 256 || value.String() != amount {
+		return ErrInvalidRequest
 	}
 	return nil
 }
