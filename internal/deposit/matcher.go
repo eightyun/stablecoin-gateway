@@ -22,13 +22,15 @@ func (store *Store) MatchNext(ctx context.Context) (result MatchResult, err erro
 	}()
 
 	var network, contract, transactionID, addressID, amount string
+	var screeningJobID, screeningDecision string
 	var assetStatus, merchantStatus, addressStatus string
 	var logIndex int64
 	var blockTime *time.Time
 	err = transaction.QueryRow(ctx, `
 		SELECT event.network, event.contract, event.transaction_id, event.log_index,
 		       event.block_time, event.amount::TEXT, address.id,
-		       asset.status, merchant.status, address.status
+		       asset.status, merchant.status, address.status,
+		       screening.id::TEXT, screening_result.decision
 		FROM chain_events AS event
 		JOIN assets AS asset
 		  ON asset.network = event.network
@@ -37,24 +39,64 @@ func (store *Store) MatchNext(ctx context.Context) (result MatchResult, err erro
 		  ON address.asset_id = asset.id
 		 AND address.address = event.to_address
 		JOIN merchants AS merchant ON merchant.id = address.merchant_id
+		JOIN deposit_screening_jobs AS screening
+		  ON screening.network = event.network
+		 AND screening.contract = event.contract
+		 AND screening.transaction_id = event.transaction_id
+		 AND screening.log_index = event.log_index
+		JOIN deposit_screening_results AS screening_result
+		  ON screening_result.id = screening.current_result_id
 		LEFT JOIN deposit_event_matches AS match
 		  ON match.network = event.network
 		 AND match.contract = event.contract
 		 AND match.transaction_id = event.transaction_id
 		 AND match.log_index = event.log_index
 		WHERE match.network IS NULL
+		  AND screening.status = 'completed'
+		  AND screening_result.valid_until > CURRENT_TIMESTAMP
 		ORDER BY event.block_height, event.transaction_id, event.log_index
-		FOR UPDATE OF event SKIP LOCKED
+		FOR UPDATE OF event, screening SKIP LOCKED
 		LIMIT 1
 	`).Scan(
 		&network, &contract, &transactionID, &logIndex, &blockTime, &amount, &addressID,
-		&assetStatus, &merchantStatus, &addressStatus,
+		&assetStatus, &merchantStatus, &addressStatus, &screeningJobID, &screeningDecision,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MatchResult{}, nil
 	}
 	if err != nil {
 		return MatchResult{}, fmt.Errorf("领取待匹配链事件: %w", err)
+	}
+
+	key := eventKey{network, contract, transactionID, logIndex}
+	if screeningDecision == "deny" || screeningDecision == "review" {
+		var riskIntentID string
+		err = transaction.QueryRow(ctx, `
+			SELECT id::TEXT FROM deposit_intents
+			WHERE deposit_address_id = $1
+			FOR UPDATE
+		`, addressID).Scan(&riskIntentID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return MatchResult{}, fmt.Errorf("查询风险入金意图: %w", err)
+		}
+		reason := "screening_denied"
+		if screeningDecision == "review" {
+			reason = "screening_review"
+		}
+		result, err = recordReview(ctx, transaction, key, addressID, riskIntentID, amount, reason)
+		if err == nil {
+			err = closeScreeningJob(ctx, transaction, screeningJobID)
+		}
+		if err != nil {
+			return MatchResult{}, err
+		}
+		if err = transaction.Commit(ctx); err != nil {
+			return MatchResult{}, fmt.Errorf("提交风险入金隔离事务: %w", err)
+		}
+		return result, nil
+	}
+	if screeningDecision != "allow" {
+		return MatchResult{}, errors.New("入金筛查决策无效")
 	}
 
 	var intent matchedIntent
@@ -69,33 +111,52 @@ func (store *Store) MatchNext(ctx context.Context) (result MatchResult, err erro
 		&intent.CreatedAt, &intent.ExpiresAt, &intent.ExpectedAmount, &intent.ReceivedAmount,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, "", amount, "no_intent")
+		result, err = recordReview(ctx, transaction, key, addressID, "", amount, "no_intent")
 	} else if err != nil {
 		return MatchResult{}, fmt.Errorf("查询充值意图: %w", err)
 	} else if assetStatus != "active" {
-		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intent.ID, amount, "asset_disabled")
+		result, err = recordReview(ctx, transaction, key, addressID, intent.ID, amount, "asset_disabled")
 	} else if merchantStatus != "active" {
-		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intent.ID, amount, "merchant_inactive")
+		result, err = recordReview(ctx, transaction, key, addressID, intent.ID, amount, "merchant_inactive")
 	} else if addressStatus != "active" {
-		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intent.ID, amount, "address_retired")
+		result, err = recordReview(ctx, transaction, key, addressID, intent.ID, amount, "address_retired")
 	} else if blockTime == nil {
-		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intent.ID, amount, "missing_block_time")
+		result, err = recordReview(ctx, transaction, key, addressID, intent.ID, amount, "missing_block_time")
 	} else if blockTime.Before(intent.CreatedAt) {
-		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intent.ID, amount, "before_intent")
+		result, err = recordReview(ctx, transaction, key, addressID, intent.ID, amount, "before_intent")
 	} else if blockTime.After(intent.ExpiresAt) {
-		result, err = recordReview(ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intent.ID, amount, "after_expiry")
+		result, err = recordReview(ctx, transaction, key, addressID, intent.ID, amount, "after_expiry")
 	} else {
 		result, err = applyMatchedPayment(
-			ctx, transaction, eventKey{network, contract, transactionID, logIndex}, addressID, intent, amount,
+			ctx, transaction, key, addressID, intent, amount,
 		)
 	}
 	if err != nil {
+		return MatchResult{}, err
+	}
+	if err = closeScreeningJob(ctx, transaction, screeningJobID); err != nil {
 		return MatchResult{}, err
 	}
 	if err = transaction.Commit(ctx); err != nil {
 		return MatchResult{}, fmt.Errorf("提交充值匹配事务: %w", err)
 	}
 	return result, nil
+}
+
+func closeScreeningJob(ctx context.Context, transaction pgx.Tx, jobID string) error {
+	command, err := transaction.Exec(ctx, `
+		UPDATE deposit_screening_jobs
+		SET status = 'closed', lease_owner = NULL, lease_until = NULL,
+		    updated_at = clock_timestamp()
+		WHERE id = $1 AND status = 'completed'
+	`, jobID)
+	if err != nil {
+		return fmt.Errorf("关闭入金筛查任务: %w", err)
+	}
+	if command.RowsAffected() != 1 {
+		return errors.New("入金筛查任务状态已变化")
+	}
+	return nil
 }
 
 // ExpireDue 将已到期的未付款和部分付款意图转为终态。

@@ -47,6 +47,9 @@ func (store *Store) Snapshot(ctx context.Context) (Snapshot, error) {
 	if err := readScreening(ctx, tx, snapshot.ScreeningJobs, snapshot.ScreeningDecisions); err != nil {
 		return Snapshot{}, err
 	}
+	if err := readDepositScreening(ctx, tx, snapshot.DepositScreeningJobs, snapshot.DepositScreeningDecisions); err != nil {
+		return Snapshot{}, err
+	}
 	if err := readCursors(ctx, tx, snapshot.IndexerCursors); err != nil {
 		return Snapshot{}, err
 	}
@@ -64,14 +67,16 @@ func (store *Store) Snapshot(ctx context.Context) (Snapshot, error) {
 
 func emptySnapshot() Snapshot {
 	snapshot := Snapshot{
-		OpenReconciliationCases: make(map[string]int64, len(reconciliationSeverity)),
-		Payouts:                 make(map[string]CountAndOldest, len(payoutStatuses)),
-		Outbox:                  make(map[string]CountAndOldest, len(outboxStatuses)),
-		IndexerCursors:          make(map[string]CursorSnapshot),
-		LastReconciliationRun:   make(map[string]float64, len(reconciliationKinds)),
-		LastWalletSnapshot:      make(map[string]float64),
-		ScreeningJobs:           make(map[string]CountAndOldest, len(screeningJobStatuses)),
-		ScreeningDecisions:      make(map[string]int64, len(screeningDecisions)),
+		OpenReconciliationCases:   make(map[string]int64, len(reconciliationSeverity)),
+		Payouts:                   make(map[string]CountAndOldest, len(payoutStatuses)),
+		Outbox:                    make(map[string]CountAndOldest, len(outboxStatuses)),
+		IndexerCursors:            make(map[string]CursorSnapshot),
+		LastReconciliationRun:     make(map[string]float64, len(reconciliationKinds)),
+		LastWalletSnapshot:        make(map[string]float64),
+		ScreeningJobs:             make(map[string]CountAndOldest, len(screeningJobStatuses)),
+		ScreeningDecisions:        make(map[string]int64, len(screeningDecisions)),
+		DepositScreeningJobs:      make(map[string]CountAndOldest, len(screeningJobStatuses)),
+		DepositScreeningDecisions: make(map[string]int64, len(screeningDecisions)),
 	}
 	for _, severity := range reconciliationSeverity {
 		snapshot.OpenReconciliationCases[severity] = 0
@@ -90,8 +95,72 @@ func emptySnapshot() Snapshot {
 	}
 	for _, decision := range screeningDecisions {
 		snapshot.ScreeningDecisions[decision] = 0
+		snapshot.DepositScreeningDecisions[decision] = 0
+	}
+	for _, status := range screeningJobStatuses {
+		snapshot.DepositScreeningJobs[status] = CountAndOldest{}
 	}
 	return snapshot
+}
+
+func readDepositScreening(
+	ctx context.Context,
+	tx pgx.Tx,
+	jobs map[string]CountAndOldest,
+	decisions map[string]int64,
+) error {
+	rows, err := tx.Query(ctx, `
+		SELECT status, COUNT(*), COALESCE(EXTRACT(EPOCH FROM MIN(created_at)), 0)::double precision
+		FROM deposit_screening_jobs
+		WHERE status IN ('pending', 'processing')
+		GROUP BY status
+	`)
+	if err != nil {
+		return fmt.Errorf("查询入金地址筛查任务指标: %w", err)
+	}
+	for rows.Next() {
+		var status string
+		var value CountAndOldest
+		if err := rows.Scan(&status, &value.Count, &value.OldestCreatedUnixTime); err != nil {
+			rows.Close()
+			return fmt.Errorf("读取入金地址筛查任务指标: %w", err)
+		}
+		jobs[status] = value
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("遍历入金地址筛查任务指标: %w", err)
+	}
+	rows.Close()
+
+	rows, err = tx.Query(ctx, `
+		SELECT result.decision, COUNT(*)
+		FROM deposit_screening_jobs AS job
+		JOIN deposit_screening_results AS result ON result.id = job.current_result_id
+		LEFT JOIN deposit_event_matches AS match
+		  ON match.network = job.network AND match.contract = job.contract
+		 AND match.transaction_id = job.transaction_id AND match.log_index = job.log_index
+		WHERE match.network IS NULL AND job.status = 'completed'
+		  AND result.valid_until > CURRENT_TIMESTAMP
+		  AND result.decision IN ('deny', 'review')
+		GROUP BY result.decision
+	`)
+	if err != nil {
+		return fmt.Errorf("查询入金地址筛查决策指标: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var decision string
+		var count int64
+		if err := rows.Scan(&decision, &count); err != nil {
+			return fmt.Errorf("读取入金地址筛查决策指标: %w", err)
+		}
+		decisions[decision] = count
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历入金地址筛查决策指标: %w", err)
+	}
+	return nil
 }
 
 func readReconciliationCases(ctx context.Context, tx pgx.Tx, target map[string]int64) error {

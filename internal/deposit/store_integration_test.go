@@ -8,10 +8,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/eightyun/stablecoin-gateway/internal/database"
+	"github.com/eightyun/stablecoin-gateway/internal/screening"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -65,6 +67,64 @@ func TestStoreCreatesIntentAndMatchesExactPayment(t *testing.T) {
 	assertDepositPosting(t, pool, intent.ID, matched.LedgerTransactionID, "1000000")
 	if empty, err := store.MatchNext(ctx); err != nil || empty.Processed {
 		t.Fatalf("重复 MatchNext() = %+v, %v", empty, err)
+	}
+}
+
+func TestStoreFailsClosedAndQuarantinesDeniedInbound(t *testing.T) {
+	store, pool, fixture := newDepositFixture(t)
+	ctx := context.Background()
+	addressID := randomUUID(t)
+	if _, err := store.RegisterAddress(ctx, Address{
+		ID: addressID, MerchantID: fixture.merchantID, AssetID: fixture.assetID, Address: fixture.address,
+	}); err != nil {
+		t.Fatalf("RegisterAddress() error = %v", err)
+	}
+	intent := Intent{
+		ID: randomUUID(t), MerchantID: fixture.merchantID, AssetID: fixture.assetID,
+		DepositAddressID: addressID, IdempotencyKey: "idem-screening-deny", MerchantReference: "order-screening-deny",
+		ExpectedAmount: "25", ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if _, err := store.CreateIntent(ctx, intent); err != nil {
+		t.Fatalf("CreateIntent() error = %v", err)
+	}
+	insertUnscreenedChainEvent(t, pool, fixture, "tx-screening-deny", 0, 1, time.Now().Add(time.Minute), "25")
+	if result, err := store.MatchNext(ctx); err != nil || result.Processed {
+		t.Fatalf("未筛查 MatchNext() = %+v, %v", result, err)
+	}
+	claim := completeInboundScreeningForEvent(t, pool, fixture, "tx-screening-deny", 0, screening.DecisionDeny)
+	actionStore, err := screening.NewInboundStore(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions, err := actionStore.ListInboundActionRequired(ctx, 100)
+	if err != nil || !containsInboundAction(actions, claim.JobID, screening.DecisionDeny) {
+		t.Fatalf("ListInboundActionRequired() = %+v, %v", actions, err)
+	}
+	result, err := store.MatchNext(ctx)
+	if err != nil || !result.Processed || result.MatchStatus != "review" ||
+		result.Reason != "screening_denied" || result.Credited {
+		t.Fatalf("deny MatchNext() = %+v, %v", result, err)
+	}
+	actions, err = actionStore.ListInboundActionRequired(ctx, 100)
+	if err != nil || !containsQuarantinedInboundAction(actions, claim.JobID, screening.DecisionDeny) {
+		t.Fatalf("隔离后 ListInboundActionRequired() = %+v, %v", actions, err)
+	}
+	var jobStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM deposit_screening_jobs WHERE id = $1`, claim.JobID).Scan(&jobStatus); err != nil || jobStatus != "closed" {
+		t.Fatalf("隔离后筛查任务状态 = %q, %v", jobStatus, err)
+	}
+	var transactionCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM journal_transactions
+		WHERE reference_type = 'deposit' AND reference_id = $1
+	`, intent.ID).Scan(&transactionCount); err != nil || transactionCount != 0 {
+		t.Fatalf("风险入金账务交易数 = %d, %v", transactionCount, err)
+	}
+	var intentStatus, receivedAmount string
+	if err := pool.QueryRow(ctx, `
+		SELECT status, received_amount::TEXT FROM deposit_intents WHERE id = $1
+	`, intent.ID).Scan(&intentStatus, &receivedAmount); err != nil || intentStatus != "pending" || receivedAmount != "0" {
+		t.Fatalf("风险入金意图 status=%s received=%s error=%v", intentStatus, receivedAmount, err)
 	}
 }
 
@@ -418,6 +478,12 @@ func assertDepositPosting(t *testing.T, pool *pgxpool.Pool, intentID, journalID,
 
 func insertChainEvent(t *testing.T, pool *pgxpool.Pool, fixture depositFixture, transactionID string, logIndex, height int64, blockTime time.Time, amount string) {
 	t.Helper()
+	insertUnscreenedChainEvent(t, pool, fixture, transactionID, logIndex, height, blockTime, amount)
+	completeInboundScreeningForEvent(t, pool, fixture, transactionID, logIndex, screening.DecisionAllow)
+}
+
+func insertUnscreenedChainEvent(t *testing.T, pool *pgxpool.Pool, fixture depositFixture, transactionID string, logIndex, height int64, blockTime time.Time, amount string) {
+	t.Helper()
 	if _, err := pool.Exec(context.Background(), `
 		INSERT INTO chain_events (
 			network, contract, transaction_id, log_index, block_height,
@@ -427,6 +493,78 @@ func insertChainEvent(t *testing.T, pool *pgxpool.Pool, fixture depositFixture, 
 		"block-"+transactionID, blockTime.UTC(), "41"+randomHex(t, 20), fixture.address, amount); err != nil {
 		t.Fatalf("插入链事件: %v", err)
 	}
+}
+
+func completeInboundScreeningForEvent(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	fixture depositFixture,
+	transactionID string,
+	logIndex int64,
+	decision string,
+) screening.InboundClaim {
+	t.Helper()
+	jobID, resultID := randomUUID(t), randomUUID(t)
+	transaction, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("开始准备入金筛查结果: %v", err)
+	}
+	defer func() { _ = transaction.Rollback(context.Background()) }()
+	now := time.Now().UTC()
+	if _, err := transaction.Exec(context.Background(), `
+		INSERT INTO deposit_screening_jobs (
+			id, network, contract, transaction_id, log_index,
+			source_address, destination_address, status,
+			lease_owner, lease_until, lease_epoch, attempts
+		)
+		SELECT $1, network, contract, transaction_id, log_index,
+		       from_address, to_address, 'processing',
+		       'deposit-integration-screening', clock_timestamp() + INTERVAL '1 minute', 1, 1
+		FROM chain_events
+		WHERE network = $2 AND contract = $3 AND transaction_id = $4 AND log_index = $5
+	`, jobID, fixture.network, fixture.contract, transactionID, logIndex); err != nil {
+		t.Fatalf("创建入金筛查任务: %v", err)
+	}
+	if _, err := transaction.Exec(context.Background(), `
+		INSERT INTO deposit_screening_results (
+			id, job_id, attempt, provider, decision, reason_codes,
+			provider_reference, response_hash, checked_at, valid_until
+		) VALUES ($1, $2, 1, 'integration-test', $3, jsonb_build_array('test_' || $3),
+		          $4, $5, $6, $7)
+	`, resultID, jobID, decision, "ref-"+jobID, strings.Repeat("c", 64), now, now.Add(time.Hour)); err != nil {
+		t.Fatalf("创建入金筛查结果: %v", err)
+	}
+	if _, err := transaction.Exec(context.Background(), `
+		UPDATE deposit_screening_jobs
+		SET status = 'completed', current_result_id = $2,
+		    lease_owner = NULL, lease_until = NULL, updated_at = clock_timestamp()
+		WHERE id = $1
+	`, jobID, resultID); err != nil {
+		t.Fatalf("完成入金筛查任务: %v", err)
+	}
+	if err := transaction.Commit(context.Background()); err != nil {
+		t.Fatalf("提交入金筛查结果: %v", err)
+	}
+	return screening.InboundClaim{JobID: jobID, WorkerID: "deposit-integration-screening", LeaseEpoch: 1}
+}
+
+func containsInboundAction(actions []screening.InboundActionRequired, jobID, decision string) bool {
+	for _, action := range actions {
+		if action.JobID == jobID && action.Decision == decision {
+			return true
+		}
+	}
+	return false
+}
+
+func containsQuarantinedInboundAction(actions []screening.InboundActionRequired, jobID, decision string) bool {
+	for _, action := range actions {
+		if action.JobID == jobID && action.Decision == decision && action.Quarantined &&
+			action.MatchReason == "screening_denied" {
+			return true
+		}
+	}
+	return false
 }
 
 func randomUUID(t *testing.T) string {

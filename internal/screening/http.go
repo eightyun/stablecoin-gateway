@@ -106,17 +106,21 @@ func (provider *HTTPProvider) Screen(ctx context.Context, request Request) (Resu
 	}
 	body, err := json.Marshal(struct {
 		RequestID          string `json:"request_id"`
-		PayoutID           string `json:"payout_id"`
+		PayoutID           string `json:"payout_id,omitempty"`
+		DepositScreeningID string `json:"deposit_screening_id,omitempty"`
 		Direction          string `json:"direction"`
 		Network            string `json:"network"`
 		AssetID            string `json:"asset_id"`
 		ContractAddress    string `json:"contract_address"`
+		SourceAddress      string `json:"source_address,omitempty"`
 		DestinationAddress string `json:"destination_address"`
 		Amount             string `json:"amount"`
 	}{
-		RequestID: request.RequestID, PayoutID: request.PayoutID, Direction: "outbound",
+		RequestID: request.RequestID, PayoutID: request.PayoutID,
+		DepositScreeningID: request.DepositScreeningID, Direction: request.Direction,
 		Network: request.Network, AssetID: request.AssetID, ContractAddress: request.ContractAddress,
-		DestinationAddress: request.DestinationAddress, Amount: request.Amount,
+		SourceAddress: request.SourceAddress, DestinationAddress: request.DestinationAddress,
+		Amount: request.Amount,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("编码地址筛查请求: %w", err)
@@ -177,21 +181,37 @@ func (provider *HTTPProvider) parseResponse(body []byte, now time.Time) (Result,
 
 func normalizeRequest(request Request) Request {
 	request.RequestID = strings.TrimSpace(request.RequestID)
+	request.Direction = strings.TrimSpace(request.Direction)
 	request.PayoutID = strings.TrimSpace(request.PayoutID)
+	request.DepositScreeningID = strings.TrimSpace(request.DepositScreeningID)
 	request.Network = strings.TrimSpace(request.Network)
 	request.AssetID = strings.TrimSpace(request.AssetID)
 	request.ContractAddress = strings.TrimSpace(request.ContractAddress)
+	request.SourceAddress = strings.TrimSpace(request.SourceAddress)
 	request.DestinationAddress = strings.TrimSpace(request.DestinationAddress)
 	request.Amount = strings.TrimSpace(request.Amount)
 	return request
 }
 
 func validateProviderRequest(request Request) error {
-	if request.RequestID == "" || len(request.RequestID) > 128 || !identity.ValidUUID(request.PayoutID) ||
+	if request.RequestID == "" || len(request.RequestID) > 128 ||
 		request.Network == "" || len(request.Network) > 128 || request.AssetID == "" || len(request.AssetID) > 256 ||
 		request.ContractAddress == "" || len(request.ContractAddress) > 128 ||
 		request.DestinationAddress == "" || len(request.DestinationAddress) > 128 ||
 		request.Amount == "" || len(request.Amount) > 78 || request.Amount[0] == '0' {
+		return ErrInvalidProviderRequest
+	}
+	switch request.Direction {
+	case DirectionOutbound:
+		if !identity.ValidUUID(request.PayoutID) || request.DepositScreeningID != "" || request.SourceAddress != "" {
+			return ErrInvalidProviderRequest
+		}
+	case DirectionInbound:
+		if request.PayoutID != "" || !identity.ValidUUID(request.DepositScreeningID) ||
+			request.SourceAddress == "" || len(request.SourceAddress) > 128 {
+			return ErrInvalidProviderRequest
+		}
+	default:
 		return ErrInvalidProviderRequest
 	}
 	for _, digit := range request.Amount {

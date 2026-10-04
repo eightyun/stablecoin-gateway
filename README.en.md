@@ -48,8 +48,9 @@ Implemented components:
 - Prometheus metrics, liveness probes, and PostgreSQL readiness probes for long-running fund workers
 - A dedicated business-risk monitor with Prometheus alerts for reconciliation findings, payout backlog, Outbox dead letters, stalled indexing, and stale scheduled controls
 - A leased payout-address screening worker with immutable results; missing, non-allow, or expired screening evidence blocks approval
+- A finalized-event-driven inbound screening worker; only a current allow can be credited, while deny/review results are quarantined
 
-Not yet implemented: inbound-address screening, wallet sweeping, complete four-layer reconciliation across chain, ledger, in-flight funds, and providers, monitoring dashboards, and a production KMS/HSM/MPC signing backend.
+Not yet implemented: wallet sweeping, complete four-layer reconciliation across chain, ledger, in-flight funds, and providers, monitoring dashboards, and a production KMS/HSM/MPC signing backend.
 
 ## Local Development
 
@@ -150,7 +151,7 @@ The worker rejects private, loopback, and link-local targets and does not follow
 
 ## Monitoring and Alerts
 
-The indexer, deposit matcher, payout screener, payout signer, payout executor, and webhook worker expose these endpoints on `127.0.0.1:9090` by default:
+The indexer, inbound screener, deposit matcher, payout screener, payout signer, payout executor, and webhook worker expose these endpoints on `127.0.0.1:9090` by default:
 
 - `GET /healthz`: process liveness
 - `GET /readyz`: timeout-bounded PostgreSQL readiness
@@ -174,18 +175,37 @@ export GATEWAY_MONITOR_REFRESH_INTERVAL='15s'
 go run ./cmd/gateway-monitor
 ```
 
-The process periodically captures a repeatable-read PostgreSQL snapshot. Prometheus scrapes in-memory gauges and therefore does not query the database at scrape frequency. Metrics cover open reconciliation cases, payout status and oldest creation time, Outbox backlog and dead letters, indexer cursor activity, and the latest reconciliation and wallet-snapshot timestamps. They are observational only and never mutate ledger or business state.
+The process periodically captures a repeatable-read PostgreSQL snapshot. Prometheus scrapes in-memory gauges and therefore does not query the database at scrape frequency. Metrics cover open reconciliation cases, payout status and oldest creation time, inbound/outbound screening backlog and risk decisions, Outbox backlog and dead letters, indexer cursor activity, and the latest reconciliation and wallet-snapshot timestamps. They are observational only and never mutate ledger or business state.
 
 Load [`configs/prometheus/alerts.yml`](configs/prometheus/alerts.yml) into Prometheus. The process-down rule assumes the scrape job is named `stablecoin-gateway-monitor`. The payout, cursor, reconciliation, and wallet-snapshot thresholds are safe starting points and must be tuned to chain finality, scheduling frequency, and production SLAs. Cursor staleness currently detects stopped indexer activity; exact chain-head lag will follow with node-level monitoring.
+
+## Address Screening
+
+A finalized inbound event must have a current `allow` before the deposit matcher can accumulate it or post ledger entries. `deny/review` creates an immutable manual-review `deposit_event_matches` fact without creating merchant available balance. Provider failure, missing evidence, and expired evidence all fail closed.
+
+Configure the provider, then start the inbound screener before the deposit matcher:
+
+```bash
+export GATEWAY_SCREENING_PROVIDER_URL='https://screening.internal.example'
+export GATEWAY_SCREENING_PROVIDER_NAME='production-adapter'
+export GATEWAY_SCREENING_PROVIDER_BEARER_TOKEN='INJECT_FROM_SECRET_MANAGER'
+go run ./cmd/gateway-deposit-screening-worker
+go run ./cmd/gateway-deposit-worker
+
+go run ./cmd/gateway-admin list-deposit-screenings --limit 100
+```
+
+The listing includes both pending-isolation and already quarantined `deny/review` findings. `quarantined=true` means the deposit matcher has written the manual-review fact without creating merchant balance. Return, reporting, or release actions remain explicit compliance operations; the system never disposes of funds automatically.
+
+When upgrading, stop the old deposit matcher before applying migration 21, then start the new processes in inbound-screener → deposit-matcher order. An old binary does not contain this crediting gate.
+
+Inbound provider requests use `direction=inbound`, `deposit_screening_id`, `source_address`, and the platform `destination_address`. Outbound requests retain `direction=outbound`, `payout_id`, and `destination_address`. Both include network, asset, contract, and smallest-unit amount, and require provider-side idempotency through `Idempotency-Key`.
 
 Approve or reject a pending payout:
 
 Payout creation atomically creates an address-screening job. Configure an internal HTTPS provider adapter and start the screening worker first:
 
 ```bash
-export GATEWAY_SCREENING_PROVIDER_URL='https://screening.internal.example'
-export GATEWAY_SCREENING_PROVIDER_NAME='production-adapter'
-export GATEWAY_SCREENING_PROVIDER_BEARER_TOKEN='INJECT_FROM_SECRET_MANAGER'
 go run ./cmd/gateway-payout-screening-worker
 ```
 

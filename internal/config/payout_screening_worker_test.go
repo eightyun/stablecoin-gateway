@@ -48,6 +48,20 @@ func TestLoadPayoutScreeningWorkerRejectsUnsafeRelationships(t *testing.T) {
 	}
 }
 
+func TestLoadDepositScreeningWorkerUsesDedicatedWorkerID(t *testing.T) {
+	clearPayoutScreeningEnvironment(t)
+	t.Setenv("GATEWAY_DATABASE_URL", "postgres://gateway:test@localhost/gateway")
+	t.Setenv("GATEWAY_SCREENING_PROVIDER_URL", "https://screening.internal")
+	t.Setenv("GATEWAY_SCREENING_PROVIDER_NAME", "internal-adapter")
+	t.Setenv("GATEWAY_SCREENING_PROVIDER_BEARER_TOKEN", "secret")
+	t.Setenv("GATEWAY_SCREENING_WORKER_ID", "payout-worker")
+	t.Setenv("GATEWAY_DEPOSIT_SCREENING_WORKER_ID", "deposit-worker")
+	config, err := LoadDepositScreeningWorker()
+	if err != nil || config.WorkerID != "deposit-worker" {
+		t.Fatalf("LoadDepositScreeningWorker() = %+v, %v", config, err)
+	}
+}
+
 func clearPayoutScreeningEnvironment(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
@@ -57,6 +71,7 @@ func clearPayoutScreeningEnvironment(t *testing.T) {
 		"GATEWAY_SCREENING_WORKER_ID", "GATEWAY_SCREENING_OPERATION_TIMEOUT",
 		"GATEWAY_SCREENING_LEASE_DURATION", "GATEWAY_SCREENING_IDLE_INTERVAL",
 		"GATEWAY_SCREENING_RETRY_MIN", "GATEWAY_SCREENING_RETRY_MAX",
+		"GATEWAY_DEPOSIT_SCREENING_WORKER_ID",
 	} {
 		t.Setenv(name, "")
 	}

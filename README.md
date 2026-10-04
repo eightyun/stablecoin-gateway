@@ -48,8 +48,9 @@
 - 长运行资金 Worker 的 Prometheus 指标、存活探针和 PostgreSQL 就绪探针
 - 独立业务风险监控进程，以及覆盖对账差异、出款积压、Outbox 死信、索引停滞和任务过期的 Prometheus 告警规则
 - 基于租约和不可变结果的出款地址筛查 Worker；筛查缺失、非 allow 或过期时禁止批准
+- 基于已固化链事件的入金来源地址筛查 Worker；只有有效 allow 才能入账，deny/review 自动隔离
 
-尚未完成：入金地址筛查、归集、包含链上/账本/在途/通道的完整四层对账、监控仪表盘，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
+尚未完成：钱包归集、包含链上/账本/在途/通道的完整四层对账、监控仪表盘，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
 
 ## 本地运行
 
@@ -150,7 +151,7 @@ Worker 默认拒绝私网、回环和链路本地目标，且不跟随重定向�
 
 ## 监控与告警
 
-Indexer、充值匹配、出款筛查、出款签名、出款执行和 Webhook Worker 默认在 `127.0.0.1:9090` 暴露：
+Indexer、入金筛查、充值匹配、出款筛查、出款签名、出款执行和 Webhook Worker 默认在 `127.0.0.1:9090` 暴露：
 
 - `GET /healthz`：进程存活探针
 - `GET /readyz`：带超时的 PostgreSQL 就绪探针
@@ -174,18 +175,37 @@ export GATEWAY_MONITOR_REFRESH_INTERVAL='15s'
 go run ./cmd/gateway-monitor
 ```
 
-该进程在 PostgreSQL 可重复读事务内周期采集快照，Prometheus 抓取只读取内存 Gauge，不会按抓取频率查询数据库。它暴露未关闭对账工单、出款状态与最早创建时间、Outbox 积压与死信、索引游标活动、最近对账和钱包快照时间。指标只用于监控，不会自动改账或改变业务状态。
+该进程在 PostgreSQL 可重复读事务内周期采集快照，Prometheus 抓取只读取内存 Gauge，不会按抓取频率查询数据库。它暴露未关闭对账工单、出款状态与最早创建时间、入金/出款筛查积压和风险决策、Outbox 积压与死信、索引游标活动、最近对账和钱包快照时间。指标只用于监控，不会自动改账或改变业务状态。
 
 可直接加载 [`configs/prometheus/alerts.yml`](configs/prometheus/alerts.yml)；其中进程存活规则约定 Prometheus job 名为 `stablecoin-gateway-monitor`。出款等待、索引停滞、日终对账和钱包快照阈值是安全起点，上线前必须按节点固化速度、任务调度频率和业务 SLA 调整。当前索引告警检测游标是否停止活动，精确的链头高度差将在接入节点级监控后补充。
+
+## 地址筛查
+
+已固化的入金事件必须先得到当前有效的 `allow`，充值匹配器才会累计金额或生成账本分录。`deny/review` 会写入不可变的 `deposit_event_matches` 人工复核事实，不产生商户可用余额；Provider 故障、缺失结果和过期结果均 fail-closed。
+
+配置 Provider 后，应先启动入金筛查 Worker，再启动充值匹配 Worker：
+
+```bash
+export GATEWAY_SCREENING_PROVIDER_URL='https://screening.internal.example'
+export GATEWAY_SCREENING_PROVIDER_NAME='production-adapter'
+export GATEWAY_SCREENING_PROVIDER_BEARER_TOKEN='从密钥管理服务注入'
+go run ./cmd/gateway-deposit-screening-worker
+go run ./cmd/gateway-deposit-worker
+
+go run ./cmd/gateway-admin list-deposit-screenings --limit 100
+```
+
+该查询同时返回等待隔离和已经隔离的 `deny/review` 结果；`quarantined=true` 表示充值匹配器已经写入人工复核事实且未产生商户余额。后续退回、报告或解封必须依据部署地合规流程人工执行，系统不会自动处分资金。
+
+从旧版本升级时必须先停止旧充值匹配 Worker，再执行迁移 21，并按“入金筛查 → 充值匹配”的顺序启动新进程；否则旧二进制不具备该入账闸门。
+
+入金 Provider 请求使用 `direction=inbound`、`deposit_screening_id`、`source_address` 和平台 `destination_address`；出款请求继续使用 `direction=outbound`、`payout_id` 和 `destination_address`。两种请求均发送网络、资产、合约和最小单位金额，并以 `Idempotency-Key` 保证供应商侧幂等。
 
 审批或拒绝待审核出款：
 
 出款创建时会在同一数据库事务中生成地址筛查任务。先配置内部 HTTPS Provider 适配服务并启动 Screening Worker：
 
 ```bash
-export GATEWAY_SCREENING_PROVIDER_URL='https://screening.internal.example'
-export GATEWAY_SCREENING_PROVIDER_NAME='production-adapter'
-export GATEWAY_SCREENING_PROVIDER_BEARER_TOKEN='从密钥管理服务注入'
 go run ./cmd/gateway-payout-screening-worker
 ```
 

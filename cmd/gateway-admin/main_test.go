@@ -83,6 +83,16 @@ func TestParseListPayoutScreeningsOptions(t *testing.T) {
 	}
 }
 
+func TestParseListDepositScreeningsOptions(t *testing.T) {
+	limit, err := parseListDepositScreeningsOptions([]string{"list-deposit-screenings", "--limit", "25"})
+	if err != nil || limit != 25 {
+		t.Fatalf("parseListDepositScreeningsOptions() = %d, %v", limit, err)
+	}
+	if _, err := parseListDepositScreeningsOptions([]string{"list-deposit-screenings", "--limit", "0"}); !errors.Is(err, errUsage) {
+		t.Fatalf("invalid list options error = %v", err)
+	}
+}
+
 func TestParseRegisterCustodyWalletOptions(t *testing.T) {
 	options, err := parseRegisterCustodyWalletOptions([]string{
 		"register-custody-wallet", "--asset-id", "usdt-tron-nile",

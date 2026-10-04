@@ -26,14 +26,16 @@ type CursorSnapshot struct {
 
 // Snapshot 是同一个数据库可重复读事务内得到的业务风险视图。
 type Snapshot struct {
-	OpenReconciliationCases map[string]int64
-	Payouts                 map[string]CountAndOldest
-	Outbox                  map[string]CountAndOldest
-	IndexerCursors          map[string]CursorSnapshot
-	LastReconciliationRun   map[string]float64
-	LastWalletSnapshot      map[string]float64
-	ScreeningJobs           map[string]CountAndOldest
-	ScreeningDecisions      map[string]int64
+	OpenReconciliationCases   map[string]int64
+	Payouts                   map[string]CountAndOldest
+	Outbox                    map[string]CountAndOldest
+	IndexerCursors            map[string]CursorSnapshot
+	LastReconciliationRun     map[string]float64
+	LastWalletSnapshot        map[string]float64
+	ScreeningJobs             map[string]CountAndOldest
+	ScreeningDecisions        map[string]int64
+	DepositScreeningJobs      map[string]CountAndOldest
+	DepositScreeningDecisions map[string]int64
 }
 
 // Source 读取一次业务风险快照。

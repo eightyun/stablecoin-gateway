@@ -154,6 +154,7 @@ func (store *Store) Claim(ctx context.Context, workerID string, leaseDuration ti
 		return Claim{}, fmt.Errorf("领取出款地址筛查任务: %w", err)
 	}
 	claim.Request.PayoutID = claim.PayoutID
+	claim.Request.Direction = DirectionOutbound
 	claim.Request.RequestID = fmt.Sprintf("%s:%d", claim.PayoutID, claim.LeaseEpoch)
 	return claim, nil
 }

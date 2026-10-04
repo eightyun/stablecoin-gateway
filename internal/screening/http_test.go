@@ -23,6 +23,7 @@ func TestHTTPProviderScreensAddress(t *testing.T) {
 		}
 		var body map[string]any
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body["direction"] != "outbound" ||
+			body["payout_id"] != screeningTestPayoutID || body["source_address"] != nil ||
 			body["destination_address"] != "410000000000000000000000000000000000000000" {
 			t.Fatalf("请求体 = %+v, %v", body, err)
 		}
@@ -42,6 +43,36 @@ func TestHTTPProviderScreensAddress(t *testing.T) {
 	if err != nil || result.Provider != "test-provider" || result.Decision != DecisionAllow ||
 		result.ProviderReference != "provider-123" || len(result.ResponseHash) != 64 ||
 		len(result.ReasonCodes) != 1 || result.ReasonCodes[0] != "low_risk" {
+		t.Fatalf("Screen() = %+v, %v", result, err)
+	}
+}
+
+func TestHTTPProviderScreensInboundAddress(t *testing.T) {
+	now := time.Now().UTC()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body["direction"] != "inbound" ||
+			body["deposit_screening_id"] != screeningTestPayoutID || body["payout_id"] != nil ||
+			body["source_address"] != "411111111111111111111111111111111111111111" {
+			t.Fatalf("请求体 = %+v, %v", body, err)
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"decision": "allow", "reason_codes": []string{"low_risk"},
+			"provider_reference": "inbound-123", "checked_at": now,
+			"valid_until": now.Add(time.Hour),
+		})
+	}))
+	defer server.Close()
+	provider, err := NewHTTPProvider(testHTTPConfig(server.URL), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := validScreeningRequest()
+	request.Direction = DirectionInbound
+	request.PayoutID = ""
+	request.DepositScreeningID = screeningTestPayoutID
+	request.SourceAddress = "411111111111111111111111111111111111111111"
+	if result, err := provider.Screen(context.Background(), request); err != nil || result.Decision != DecisionAllow {
 		t.Fatalf("Screen() = %+v, %v", result, err)
 	}
 }
@@ -125,8 +156,9 @@ func testHTTPConfig(baseURL string) HTTPConfig {
 
 func validScreeningRequest() Request {
 	return Request{
-		RequestID: screeningTestPayoutID + ":1", PayoutID: screeningTestPayoutID,
-		Network: "tron-nile", AssetID: "usdt-tron-nile",
+		RequestID: screeningTestPayoutID + ":1", Direction: DirectionOutbound,
+		PayoutID: screeningTestPayoutID,
+		Network:  "tron-nile", AssetID: "usdt-tron-nile",
 		ContractAddress:    "41eca9bc828a3005b9a3b909f2cc5c2a54794de05f",
 		DestinationAddress: "410000000000000000000000000000000000000000", Amount: "1000000",
 	}

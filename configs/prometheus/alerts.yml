@@ -91,6 +91,42 @@ groups:
           summary: 出款地址需要人工复核
           description: 当前有 {{ $value }} 笔 review 出款等待人工处置。
 
+      - alert: StablecoinGatewayDepositScreeningWorkerFailures
+        expr: stablecoin_gateway_worker_consecutive_failures{worker="deposit-screening"} >= 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 入金地址筛查连续失败
+          description: Deposit Screening Worker 已连续至少 3 次无法完成来源地址筛查，新入金会保持未入账。
+
+      - alert: StablecoinGatewayDepositScreeningBacklog
+        expr: stablecoin_gateway_business_deposit_screening_jobs > 0 and (time() - stablecoin_gateway_business_deposit_screening_oldest_created_timestamp_seconds) > 300
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 入金地址筛查任务积压
+          description: 状态 {{ $labels.status }} 的最早入金筛查任务创建已超过 5 分钟。
+
+      - alert: StablecoinGatewayDepositScreeningDenied
+        expr: stablecoin_gateway_business_deposit_screening_decisions{decision="deny"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 存在被拒绝的入金来源地址
+          description: 当前有 {{ $value }} 笔 deny 入金尚未被匹配器隔离。
+
+      - alert: StablecoinGatewayDepositScreeningReviewRequired
+        expr: stablecoin_gateway_business_deposit_screening_decisions{decision="review"} > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 入金来源地址需要人工复核
+          description: 当前有 {{ $value }} 笔 review 入金尚未被匹配器隔离。
+
       - alert: StablecoinGatewayIndexerCursorStale
         expr: (time() - stablecoin_gateway_business_indexer_cursor_updated_timestamp_seconds) > 120
         for: 2m
