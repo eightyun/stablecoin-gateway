@@ -49,8 +49,9 @@ Implemented components:
 - A dedicated business-risk monitor with Prometheus alerts for reconciliation findings, payout backlog, Outbox dead letters, stalled indexing, and stale scheduled controls
 - A leased payout-address screening worker with immutable results; missing, non-allow, or expired screening evidence blocks approval
 - A finalized-event-driven inbound screening worker; only a current allow can be credited, while deny/review results are quarantined
+- A sweep planner backed by finalized wallet snapshots and complete inbound provenance; it creates immutable plans but does not sign or broadcast yet
 
-Not yet implemented: wallet sweeping, complete four-layer reconciliation across chain, ledger, in-flight funds, and providers, monitoring dashboards, and a production KMS/HSM/MPC signing backend.
+Not yet implemented: sweep signing/broadcast/finality execution, complete four-layer reconciliation across chain, ledger, in-flight funds, and providers, monitoring dashboards, and a production KMS/HSM/MPC signing backend.
 
 ## Local Development
 
@@ -91,6 +92,19 @@ go run ./cmd/gateway-wallet-snapshot
 ```
 
 The migration backfills existing deposit addresses as `deposit` custody wallets, and new deposit addresses are registered atomically. The command checks the custody-ledger checkpoint before and after chain reads and again while saving; it fails safely if the ledger changes or a payout is awaiting broadcast/finality. It never adjusts balances automatically.
+
+Create sweep plans from the latest finalized snapshot:
+
+```bash
+export GATEWAY_SWEEP_ASSET_ID='usdt-tron-nile'
+export GATEWAY_SWEEP_MINIMUM_AMOUNT='10000000'
+export GATEWAY_SWEEP_MAX_SNAPSHOT_AGE='10m'
+export GATEWAY_OBSERVABILITY_ADDR='127.0.0.1:9097'
+
+go run ./cmd/gateway-sweep-planner
+```
+
+The planner requires exactly one active hot wallet, an indexer cursor beyond the snapshot height, and proof that every inbound event through that height was matched and allowed by inbound address screening. The event sum must exactly equal the snapshotted address balance. Missing evidence fails closed. The current process only writes immutable `sweep_plans`; it never reads private keys, broadcasts transactions, or changes the ledger, so no funds move until the sweep executor is implemented.
 
 Register a hot, cold, or fee wallet that must be included in snapshots:
 
@@ -151,7 +165,7 @@ The worker rejects private, loopback, and link-local targets and does not follow
 
 ## Monitoring and Alerts
 
-The indexer, inbound screener, deposit matcher, payout screener, payout signer, payout executor, and webhook worker expose these endpoints on `127.0.0.1:9090` by default:
+The indexer, inbound screener, deposit matcher, sweep planner, payout screener, payout signer, payout executor, and webhook worker expose these endpoints on `127.0.0.1:9090` by default:
 
 - `GET /healthz`: process liveness
 - `GET /readyz`: timeout-bounded PostgreSQL readiness

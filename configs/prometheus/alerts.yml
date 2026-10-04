@@ -127,6 +127,15 @@ groups:
           summary: 入金来源地址需要人工复核
           description: 当前有 {{ $value }} 笔 review 入金尚未被匹配器隔离。
 
+      - alert: StablecoinGatewaySweepPlannerFailures
+        expr: stablecoin_gateway_worker_consecutive_failures{worker="sweep-planner"} >= 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 归集规划连续失败
+          description: Sweep Planner 已连续至少 3 次无法完成安全归集规划，请检查快照、热钱包配置和数据库状态。
+
       - alert: StablecoinGatewayIndexerCursorStale
         expr: (time() - stablecoin_gateway_business_indexer_cursor_updated_timestamp_seconds) > 120
         for: 2m
