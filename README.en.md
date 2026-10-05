@@ -338,6 +338,8 @@ The remote service must implement `POST /v1/tron/transfers:sign` and return the 
 The included `gateway-testnet-signer` accepts only Nile or Shasta. It uses a local file key and explicitly rejects mainnet, so it is intended for testnet end-to-end acceptance rather than production key custody. Prepare a dedicated test wallet, store its 64-character hexadecimal private key in a `0600` file, and create a `0700` idempotency directory. Never commit the wallet key, bearer token, or TLS private key:
 
 ```bash
+install -d -m 700 /secure/path
+go run ./cmd/gateway-testnet-wallet --private-key-file /secure/path/nile-wallet.key
 chmod 600 /secure/path/nile-wallet.key /secure/path/signer-tls.key
 install -d -m 700 /secure/path/signer-state
 

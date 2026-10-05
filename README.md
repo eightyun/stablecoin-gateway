@@ -338,6 +338,8 @@ go run ./cmd/gateway-payout-signing-worker
 仓库提供的 `gateway-testnet-signer` 只允许 Nile/Shasta，使用本地文件私钥，明确拒绝主网。它适合下一阶段测试网端到端验收，不是生产密钥托管方案。准备一个独立测试钱包，将 64 位十六进制私钥写入权限为 `0600` 的文件，并创建权限为 `0700` 的幂等存储目录；私钥、Bearer Token 和 TLS 私钥均不得提交到 Git：
 
 ```bash
+install -d -m 700 /secure/path
+go run ./cmd/gateway-testnet-wallet --private-key-file /secure/path/nile-wallet.key
 chmod 600 /secure/path/nile-wallet.key /secure/path/signer-tls.key
 install -d -m 700 /secure/path/signer-state
 
