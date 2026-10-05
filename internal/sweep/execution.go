@@ -17,6 +17,7 @@ var (
 	ErrNoConfirmationJob     = errors.New("没有待确认归集")
 	ErrInvalidExecutionClaim = errors.New("归集执行租约无效")
 	ErrExecutionLeaseLost    = errors.New("归集执行租约已失效")
+	ErrExecutionNotFound     = errors.New("归集执行不存在")
 )
 
 // BroadcastClaim 是一笔只能广播原始签名内容的归集租约。
@@ -36,6 +37,44 @@ type ConfirmationClaim struct {
 	Network     string
 	ExpiresAt   time.Time
 	Transaction tron.SignedTransaction
+}
+
+// ExecutionState 是可供运营和验收轮询的非敏感归集执行视图。
+type ExecutionState struct {
+	PlanID        string    `json:"plan_id"`
+	Status        string    `json:"status"`
+	Network       string    `json:"network"`
+	TransactionID string    `json:"transaction_id,omitempty"`
+	FailureReason string    `json:"failure_reason,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// GetExecution 返回归集执行状态，不暴露签名交易原文。
+func (store *Store) GetExecution(ctx context.Context, planID string) (ExecutionState, error) {
+	planID = strings.TrimSpace(planID)
+	if !identity.ValidUUID(planID) {
+		return ExecutionState{}, ErrExecutionNotFound
+	}
+	var state ExecutionState
+	err := store.db.QueryRow(ctx, `
+		SELECT execution.plan_id::TEXT, execution.status, asset.network,
+		       COALESCE(execution.transaction_id, ''),
+		       COALESCE(execution.failure_reason, ''), execution.updated_at
+		FROM sweep_executions AS execution
+		JOIN sweep_plans AS plan ON plan.id = execution.plan_id
+		JOIN assets AS asset ON asset.id = plan.asset_id
+		WHERE execution.plan_id = $1
+	`, planID).Scan(
+		&state.PlanID, &state.Status, &state.Network, &state.TransactionID,
+		&state.FailureReason, &state.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ExecutionState{}, ErrExecutionNotFound
+	}
+	if err != nil {
+		return ExecutionState{}, fmt.Errorf("查询归集执行状态: %w", err)
+	}
+	return state, nil
 }
 
 // ClaimBroadcast 原子领取指定网络的一笔待广播归集。

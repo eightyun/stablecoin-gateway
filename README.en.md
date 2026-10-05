@@ -131,6 +131,17 @@ go run ./cmd/gateway-sweep-execution-worker
 
 The worker only broadcasts the immutable signed transaction stored in the database. A lost node response moves the execution to `confirming`; subsequent recovery queries or rebroadcasts the exact same bytes and txid, never a newly constructed transaction. Only a finalized successful result from a Solidity Node produces `succeeded`. A finalized execution failure, or a transaction that remains missing after the finalized chain time passes its expiration, produces `failed`. Sweeps move funds between custody wallets and therefore do not change merchant liability ledgers. After a successful sweep, future finalized snapshots subtract prior successful sweep amounts, allowing the same deposit address to safely sweep later deposits again.
 
+After preparing a dedicated test database and Nile/Shasta wallets, run the one-shot acceptance command to exercise finalized snapshot capture, exact address/amount planning, isolated signing, exact-transaction broadcast, finalized confirmation, a second snapshot, and wallet-asset reconciliation:
+
+```bash
+export GATEWAY_SWEEP_ACCEPTANCE_SOURCE_ADDRESS='deposit-address-controlled-by-the-test-signer'
+export GATEWAY_SWEEP_ACCEPTANCE_DESTINATION_ADDRESS='registered-unique-hot-address'
+export GATEWAY_SWEEP_ACCEPTANCE_MAX_AMOUNT='1000000'
+go run ./cmd/gateway-sweep-acceptance
+```
+
+The command hard-rejects mainnet and requires explicit source, destination, and maximum amount bounds. It creates no plan when the current source balance exceeds that maximum. Start the isolated signer separately first. Output contains only plan, transaction, snapshot, and reconciliation identifiers—never keys or signed transaction bytes. Do not run it against a shared production database.
+
 Register a hot, cold, or fee wallet that must be included in snapshots:
 
 ```bash
@@ -392,7 +403,7 @@ Only 2xx responses are successful. Delivery is at least once, so merchants must 
 
 ## Network Testing Gates
 
-- Nile now covers both live deposit posting and a merchant-API-driven successful payout loop, plus one safe-expiry recovery path. The next phase adds broader fault injection, sustained operation, reconciliation, and monitoring.
+- Nile now covers live deposit posting, a merchant-API-driven successful payout loop, and one safe-expiry recovery path. The bounded sweep acceptance command is ready, but its live test-asset broadcast evidence is still pending. The next phase adds broader fault injection, sustained operation, reconciliation, and monitoring.
 - Mainnet canarying starts only after sustained testnet operation, three-way reconciliation, monitoring and alerting, disaster-recovery exercises, and an external security audit pass.
 - Mainnet is never a general test environment. Every mainnet canary requires a defined loss limit, dual approval, and an emergency stop.
 

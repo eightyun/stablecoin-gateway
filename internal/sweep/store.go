@@ -32,11 +32,18 @@ func NewStore(db *pgxpool.Pool) (*Store, error) {
 func (store *Store) PlanNext(ctx context.Context, policy Policy) (Plan, error) {
 	policy.AssetID = strings.TrimSpace(policy.AssetID)
 	policy.MinimumAmount = strings.TrimSpace(policy.MinimumAmount)
+	policy.MaximumAmount = strings.TrimSpace(policy.MaximumAmount)
+	policy.SourceAddress = strings.TrimSpace(policy.SourceAddress)
+	policy.DestinationAddress = strings.TrimSpace(policy.DestinationAddress)
 	if err := validatePolicy(policy); err != nil {
 		return Plan{}, err
 	}
 	minimumAmount, _ := new(big.Int).SetString(policy.MinimumAmount, 10)
 	policy.MinimumAmount = minimumAmount.String()
+	if policy.MaximumAmount != "" {
+		maximumAmount, _ := new(big.Int).SetString(policy.MaximumAmount, 10)
+		policy.MaximumAmount = maximumAmount.String()
+	}
 	var lastErr error
 	for range transactionRetryLimit {
 		plan, err := store.planNext(ctx, policy)
@@ -117,6 +124,7 @@ func (store *Store) planNext(ctx context.Context, policy Policy) (plan Plan, err
 			JOIN wallet_balance_snapshots AS balance
 			  ON balance.wallet_id = wallet.id AND balance.run_id = $2
 			WHERE wallet.asset_id = $1 AND wallet.role = 'hot' AND wallet.status = 'active'
+			  AND ($7 = '' OR wallet.address = $7)
 		), candidate AS (
 			SELECT source.id, source.address, balance.balance
 			FROM custody_wallets AS source
@@ -131,6 +139,8 @@ func (store *Store) planNext(ctx context.Context, policy Policy) (plan Plan, err
 			  AND source.role = 'deposit'
 			  AND source.status = 'active'
 			  AND balance.balance >= $4::NUMERIC
+			  AND ($5 = '' OR balance.balance <= NULLIF($5, '')::NUMERIC)
+			  AND ($6 = '' OR source.address = $6)
 			  AND NOT EXISTS (
 				SELECT 1
 				FROM sweep_plans AS existing
@@ -199,7 +209,7 @@ func (store *Store) planNext(ctx context.Context, policy Policy) (plan Plan, err
 			destination_wallet_id, destination_address, snapshot_run_id,
 			snapshot_block_height, amount, minimum_amount
 		)
-		SELECT $5, $1, candidate.id, candidate.address,
+		SELECT $8, $1, candidate.id, candidate.address,
 		       hot_wallet.id, hot_wallet.address, $2, $3,
 		       candidate.balance, $4::NUMERIC
 		FROM candidate CROSS JOIN hot_wallet
@@ -207,7 +217,8 @@ func (store *Store) planNext(ctx context.Context, policy Policy) (plan Plan, err
 		RETURNING source_wallet_id::TEXT, source_address,
 		          destination_wallet_id::TEXT, destination_address,
 		          amount::TEXT, created_at
-	`, policy.AssetID, snapshotRunID, snapshotBlockHeight, policy.MinimumAmount, plan.ID).Scan(
+	`, policy.AssetID, snapshotRunID, snapshotBlockHeight, policy.MinimumAmount,
+		policy.MaximumAmount, policy.SourceAddress, policy.DestinationAddress, plan.ID).Scan(
 		&plan.SourceWalletID, &plan.SourceAddress, &plan.DestinationWalletID,
 		&plan.DestinationAddress, &plan.Amount, &plan.CreatedAt,
 	)

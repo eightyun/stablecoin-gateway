@@ -18,9 +18,12 @@ var (
 
 // Policy 定义生成归集计划所需的安全策略。
 type Policy struct {
-	AssetID        string
-	MinimumAmount  string
-	MaxSnapshotAge time.Duration
+	AssetID            string
+	MinimumAmount      string
+	MaximumAmount      string
+	SourceAddress      string
+	DestinationAddress string
+	MaxSnapshotAge     time.Duration
 }
 
 // Plan 是绑定固化余额快照的不可变归集意图。
@@ -44,6 +47,17 @@ func validatePolicy(policy Policy) error {
 		return ErrInvalidPolicy
 	}
 	if _, ok := parsePositiveAmount(policy.MinimumAmount); !ok {
+		return ErrInvalidPolicy
+	}
+	if policy.MaximumAmount != "" {
+		maximum, ok := parsePositiveAmount(policy.MaximumAmount)
+		minimum, _ := parsePositiveAmount(policy.MinimumAmount)
+		if !ok || maximum.Cmp(minimum) < 0 {
+			return ErrInvalidPolicy
+		}
+	}
+	if len(strings.TrimSpace(policy.SourceAddress)) > 256 ||
+		len(strings.TrimSpace(policy.DestinationAddress)) > 256 {
 		return ErrInvalidPolicy
 	}
 	return nil

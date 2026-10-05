@@ -39,6 +39,43 @@ func TestStoreCreatesImmutableSweepPlan(t *testing.T) {
 	}
 }
 
+func TestStoreHonorsAcceptanceBounds(t *testing.T) {
+	store, pool, policy := newSweepFixture(t, "allow", "100", time.Hour)
+	var sourceAddress, destinationAddress string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT source.address, destination.address
+		FROM custody_wallets AS source
+		CROSS JOIN custody_wallets AS destination
+		WHERE source.asset_id = $1 AND source.role = 'deposit'
+		  AND destination.asset_id = $1 AND destination.role = 'hot'
+	`, policy.AssetID).Scan(&sourceAddress, &destinationAddress); err != nil {
+		t.Fatalf("查询归集验收钱包: %v", err)
+	}
+
+	bounded := policy
+	bounded.MaximumAmount = "99"
+	bounded.SourceAddress = sourceAddress
+	bounded.DestinationAddress = destinationAddress
+	if _, err := store.PlanNext(context.Background(), bounded); !errors.Is(err, ErrNoCandidate) {
+		t.Fatalf("超过验收上限 PlanNext() error = %v", err)
+	}
+	bounded.MaximumAmount = "100"
+	bounded.SourceAddress = "41" + strings.Repeat("f", 40)
+	if _, err := store.PlanNext(context.Background(), bounded); !errors.Is(err, ErrNoCandidate) {
+		t.Fatalf("来源地址不匹配 PlanNext() error = %v", err)
+	}
+	bounded.SourceAddress = sourceAddress
+	bounded.DestinationAddress = "41" + strings.Repeat("e", 40)
+	if _, err := store.PlanNext(context.Background(), bounded); !errors.Is(err, ErrNoCandidate) {
+		t.Fatalf("目标地址不匹配 PlanNext() error = %v", err)
+	}
+	bounded.DestinationAddress = destinationAddress
+	plan, err := store.PlanNext(context.Background(), bounded)
+	if err != nil || plan.SourceAddress != sourceAddress || plan.DestinationAddress != destinationAddress {
+		t.Fatalf("受限 PlanNext() = %+v, %v", plan, err)
+	}
+}
+
 func TestStoreLeasesAndCompletesSweepSigning(t *testing.T) {
 	store, pool, policy := newSweepFixture(t, "allow", "100", time.Hour)
 	plan, err := store.PlanNext(context.Background(), policy)
@@ -126,6 +163,13 @@ func TestStoreBroadcastsAndFinalizesSweep(t *testing.T) {
 	`, plan.ID).Scan(&status, &result, &confirmedAt); err != nil ||
 		status != "succeeded" || result != "unknown" || confirmedAt.IsZero() {
 		t.Fatalf("执行终态 status=%s result=%s confirmed_at=%v error=%v", status, result, confirmedAt, err)
+	}
+	state, err := store.GetExecution(context.Background(), plan.ID)
+	if err != nil || state.Status != "succeeded" || state.TransactionID != transaction.ID || state.Network != network {
+		t.Fatalf("GetExecution() = %+v, %v", state, err)
+	}
+	if _, err := store.GetExecution(context.Background(), "invalid"); !errors.Is(err, ErrExecutionNotFound) {
+		t.Fatalf("无效 GetExecution() error = %v", err)
 	}
 }
 
