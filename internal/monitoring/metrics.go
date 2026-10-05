@@ -16,6 +16,8 @@ type Metrics struct {
 	reconciliationCases       *prometheus.Desc
 	payouts                   *prometheus.Desc
 	payoutOldest              *prometheus.Desc
+	sweepExecutions           *prometheus.Desc
+	sweepExecutionOldest      *prometheus.Desc
 	outbox                    *prometheus.Desc
 	outboxOldest              *prometheus.Desc
 	indexerNextHeight         *prometheus.Desc
@@ -47,6 +49,14 @@ func NewMetrics() *Metrics {
 		payoutOldest: prometheus.NewDesc(
 			prometheus.BuildFQName(metricNamespace, "business", "payout_oldest_created_timestamp_seconds"),
 			"各待处理状态最早出款的创建时间 Unix 秒；无记录时为零。", []string{"status"}, nil,
+		),
+		sweepExecutions: prometheus.NewDesc(
+			prometheus.BuildFQName(metricNamespace, "business", "sweep_executions"),
+			"当前各待处理或失败状态的归集执行数。", []string{"status"}, nil,
+		),
+		sweepExecutionOldest: prometheus.NewDesc(
+			prometheus.BuildFQName(metricNamespace, "business", "sweep_execution_oldest_state_timestamp_seconds"),
+			"各归集执行状态最早进入当前状态的时间 Unix 秒；无记录时为零。", []string{"status"}, nil,
 		),
 		outbox: prometheus.NewDesc(
 			prometheus.BuildFQName(metricNamespace, "business", "outbox_events"),
@@ -104,6 +114,8 @@ func (metrics *Metrics) Describe(descriptions chan<- *prometheus.Desc) {
 	descriptions <- metrics.reconciliationCases
 	descriptions <- metrics.payouts
 	descriptions <- metrics.payoutOldest
+	descriptions <- metrics.sweepExecutions
+	descriptions <- metrics.sweepExecutionOldest
 	descriptions <- metrics.outbox
 	descriptions <- metrics.outboxOldest
 	descriptions <- metrics.indexerNextHeight
@@ -132,6 +144,13 @@ func (metrics *Metrics) Collect(output chan<- prometheus.Metric) {
 		value := metrics.snapshot.Payouts[status]
 		output <- prometheus.MustNewConstMetric(metrics.payouts, prometheus.GaugeValue, float64(value.Count), status)
 		output <- prometheus.MustNewConstMetric(metrics.payoutOldest, prometheus.GaugeValue, value.OldestCreatedUnixTime, status)
+	}
+	for _, status := range sweepExecutionStatuses {
+		value := metrics.snapshot.SweepExecutions[status]
+		output <- prometheus.MustNewConstMetric(metrics.sweepExecutions, prometheus.GaugeValue, float64(value.Count), status)
+		output <- prometheus.MustNewConstMetric(
+			metrics.sweepExecutionOldest, prometheus.GaugeValue, value.OldestCreatedUnixTime, status,
+		)
 	}
 	for _, status := range outboxStatuses {
 		value := metrics.snapshot.Outbox[status]
@@ -190,6 +209,9 @@ func cloneSnapshot(source Snapshot) Snapshot {
 	}
 	for key, value := range source.Payouts {
 		target.Payouts[key] = value
+	}
+	for key, value := range source.SweepExecutions {
+		target.SweepExecutions[key] = value
 	}
 	for key, value := range source.Outbox {
 		target.Outbox[key] = value

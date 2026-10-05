@@ -16,6 +16,9 @@ func TestMetricsUpdateReplacesDynamicLabels(t *testing.T) {
 		Payouts: map[string]CountAndOldest{
 			"confirming": {Count: 3, OldestCreatedUnixTime: 100},
 		},
+		SweepExecutions: map[string]CountAndOldest{
+			"ready_for_broadcast": {Count: 2, OldestCreatedUnixTime: 150},
+		},
 		Outbox: map[string]CountAndOldest{"dead": {Count: 1, OldestCreatedUnixTime: 200}},
 		IndexerCursors: map[string]CursorSnapshot{
 			"tron-nile": {NextHeight: 42, UpdatedUnixTime: 300},
@@ -33,6 +36,7 @@ func TestMetricsUpdateReplacesDynamicLabels(t *testing.T) {
 	})
 	assertGaugeValue(t, registry, "stablecoin_gateway_business_reconciliation_open_cases", map[string]string{"severity": "critical"}, 2)
 	assertGaugeValue(t, registry, "stablecoin_gateway_business_payouts", map[string]string{"status": "confirming"}, 3)
+	assertGaugeValue(t, registry, "stablecoin_gateway_business_sweep_executions", map[string]string{"status": "ready_for_broadcast"}, 2)
 	assertGaugeValue(t, registry, "stablecoin_gateway_business_indexer_next_height", map[string]string{"network": "tron-nile"}, 42)
 	assertGaugeValue(t, registry, "stablecoin_gateway_business_wallet_snapshot_last_capture_timestamp_seconds", map[string]string{"asset_id": "usdt-tron-nile"}, 500)
 	assertGaugeValue(t, registry, "stablecoin_gateway_business_payout_screening_jobs", map[string]string{"status": "pending"}, 4)

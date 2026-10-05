@@ -41,6 +41,9 @@ func (store *Store) Snapshot(ctx context.Context) (Snapshot, error) {
 	if err := readPayouts(ctx, tx, snapshot.Payouts); err != nil {
 		return Snapshot{}, err
 	}
+	if err := readSweepExecutions(ctx, tx, snapshot.SweepExecutions); err != nil {
+		return Snapshot{}, err
+	}
 	if err := readOutbox(ctx, tx, snapshot.Outbox); err != nil {
 		return Snapshot{}, err
 	}
@@ -69,6 +72,7 @@ func emptySnapshot() Snapshot {
 	snapshot := Snapshot{
 		OpenReconciliationCases:   make(map[string]int64, len(reconciliationSeverity)),
 		Payouts:                   make(map[string]CountAndOldest, len(payoutStatuses)),
+		SweepExecutions:           make(map[string]CountAndOldest, len(sweepExecutionStatuses)),
 		Outbox:                    make(map[string]CountAndOldest, len(outboxStatuses)),
 		IndexerCursors:            make(map[string]CursorSnapshot),
 		LastReconciliationRun:     make(map[string]float64, len(reconciliationKinds)),
@@ -83,6 +87,9 @@ func emptySnapshot() Snapshot {
 	}
 	for _, status := range payoutStatuses {
 		snapshot.Payouts[status] = CountAndOldest{}
+	}
+	for _, status := range sweepExecutionStatuses {
+		snapshot.SweepExecutions[status] = CountAndOldest{}
 	}
 	for _, status := range outboxStatuses {
 		snapshot.Outbox[status] = CountAndOldest{}
@@ -101,6 +108,39 @@ func emptySnapshot() Snapshot {
 		snapshot.DepositScreeningJobs[status] = CountAndOldest{}
 	}
 	return snapshot
+}
+
+func readSweepExecutions(ctx context.Context, tx pgx.Tx, target map[string]CountAndOldest) error {
+	rows, err := tx.Query(ctx, `
+		SELECT execution.status, COUNT(*),
+		       COALESCE(EXTRACT(EPOCH FROM MIN(
+		           CASE execution.status
+		               WHEN 'ready_for_broadcast' THEN execution.updated_at
+		               WHEN 'confirming' THEN execution.broadcasted_at
+		               WHEN 'failed' THEN execution.failed_at
+		               ELSE execution.created_at
+		           END
+		       )), 0)::double precision
+		FROM sweep_executions AS execution
+		WHERE execution.status IN ('planned', 'ready_for_broadcast', 'confirming', 'failed')
+		GROUP BY execution.status
+	`)
+	if err != nil {
+		return fmt.Errorf("查询归集执行状态指标: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var value CountAndOldest
+		if err := rows.Scan(&status, &value.Count, &value.OldestCreatedUnixTime); err != nil {
+			return fmt.Errorf("读取归集执行状态指标: %w", err)
+		}
+		target[status] = value
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历归集执行状态指标: %w", err)
+	}
+	return nil
 }
 
 func readDepositScreening(

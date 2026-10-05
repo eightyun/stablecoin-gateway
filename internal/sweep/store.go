@@ -132,8 +132,11 @@ func (store *Store) planNext(ctx context.Context, policy Policy) (plan Plan, err
 			  AND source.status = 'active'
 			  AND balance.balance >= $4::NUMERIC
 			  AND NOT EXISTS (
-				SELECT 1 FROM sweep_plans AS existing
+				SELECT 1
+				FROM sweep_plans AS existing
+				JOIN sweep_executions AS execution ON execution.plan_id = existing.id
 				WHERE existing.source_wallet_id = source.id
+				  AND execution.status IN ('planned', 'ready_for_broadcast', 'confirming')
 			  )
 			  AND EXISTS (
 				SELECT 1
@@ -180,6 +183,12 @@ func (store *Store) planNext(ctx context.Context, policy Policy) (plan Plan, err
 				  AND event.contract = asset.contract_address
 				  AND event.to_address = source.address
 				  AND event.block_height <= $3
+			  ) - (
+				SELECT COALESCE(SUM(existing.amount), 0)
+				FROM sweep_plans AS existing
+				JOIN sweep_executions AS execution ON execution.plan_id = existing.id
+				WHERE existing.source_wallet_id = source.id
+				  AND execution.status = 'succeeded'
 			  )
 			ORDER BY balance.balance DESC, source.id
 			FOR UPDATE OF source SKIP LOCKED

@@ -85,6 +85,50 @@ func TestStoreLeasesAndCompletesSweepSigning(t *testing.T) {
 	}
 }
 
+func TestStoreBroadcastsAndFinalizesSweep(t *testing.T) {
+	store, pool, policy := newSweepFixture(t, "allow", "100", time.Hour)
+	plan, err := store.PlanNext(context.Background(), policy)
+	if err != nil {
+		t.Fatalf("PlanNext() error = %v", err)
+	}
+	network := "sweep-network-" + strings.TrimPrefix(policy.AssetID, "sweep-")
+	signing, err := store.ClaimSigning(context.Background(), "signer-1", network, time.Minute)
+	if err != nil {
+		t.Fatalf("ClaimSigning() error = %v", err)
+	}
+	transaction := sweepSignedTransaction(t)
+	observation := BalanceObservation{Balance: "100", BlockHeight: 12, BlockHash: strings.Repeat("d", 64)}
+	if err := store.CompleteSigning(context.Background(), signing, observation, transaction); err != nil {
+		t.Fatalf("CompleteSigning() error = %v", err)
+	}
+	if _, err := store.ClaimBroadcast(context.Background(), "executor-wrong", "other-network", time.Minute); !errors.Is(err, ErrNoBroadcastJob) {
+		t.Fatalf("错误网络 ClaimBroadcast() error = %v", err)
+	}
+	broadcast, err := store.ClaimBroadcast(context.Background(), "executor-1", network, time.Minute)
+	if err != nil || broadcast.PlanID != plan.ID || broadcast.Transaction.ID != transaction.ID {
+		t.Fatalf("ClaimBroadcast() = %+v, %v", broadcast, err)
+	}
+	if err := store.BeginConfirmation(context.Background(), broadcast, "unknown", "broadcast_error"); err != nil {
+		t.Fatalf("BeginConfirmation() error = %v", err)
+	}
+	confirmation, err := store.ClaimConfirmation(context.Background(), "executor-2", network, time.Minute)
+	if err != nil || confirmation.PlanID != plan.ID || confirmation.Transaction.ID != transaction.ID {
+		t.Fatalf("ClaimConfirmation() = %+v, %v", confirmation, err)
+	}
+	if err := store.CompleteConfirmationSuccess(context.Background(), confirmation); err != nil {
+		t.Fatalf("CompleteConfirmationSuccess() error = %v", err)
+	}
+	var status, result string
+	var confirmedAt time.Time
+	if err := pool.QueryRow(context.Background(), `
+		SELECT status, broadcast_result, confirmed_at
+		FROM sweep_executions WHERE plan_id = $1
+	`, plan.ID).Scan(&status, &result, &confirmedAt); err != nil ||
+		status != "succeeded" || result != "unknown" || confirmedAt.IsZero() {
+		t.Fatalf("执行终态 status=%s result=%s confirmed_at=%v error=%v", status, result, confirmedAt, err)
+	}
+}
+
 func TestStoreRejectsUnsafeProvenanceAndBalanceMismatch(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -297,7 +341,7 @@ func sweepUUID(t *testing.T) string {
 
 func sweepSignedTransaction(t *testing.T) tron.SignedTransaction {
 	t.Helper()
-	rawData := []byte("sweep-signing-integration")
+	rawData := []byte("sweep-signing-integration-" + sweepUUID(t))
 	digest := sha256.Sum256(rawData)
 	transactionID := hex.EncodeToString(digest[:])
 	now := time.Now().UTC()

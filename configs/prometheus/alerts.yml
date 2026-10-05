@@ -145,6 +145,33 @@ groups:
           summary: 归集签名连续失败
           description: Sweep Signing Worker 已连续至少 3 次无法完成余额预检或隔离签名，请检查来源余额、节点和 signer。
 
+      - alert: StablecoinGatewaySweepExecutionFailures
+        expr: stablecoin_gateway_worker_consecutive_failures{worker="sweep-execution"} >= 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 归集执行连续失败
+          description: Sweep Execution Worker 已连续至少 3 次无法完成广播或固化确认，请检查节点和数据库状态。
+
+      - alert: StablecoinGatewaySweepAwaitingBroadcastTooLong
+        expr: stablecoin_gateway_business_sweep_executions{status="ready_for_broadcast"} > 0 and (time() - stablecoin_gateway_business_sweep_execution_oldest_state_timestamp_seconds{status="ready_for_broadcast"}) > 300
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 已签名归集等待广播时间过长
+          description: 最早一笔 ready_for_broadcast 归集创建已超过 5 分钟，请检查 Sweep Execution Worker。
+
+      - alert: StablecoinGatewaySweepConfirmingTooLong
+        expr: stablecoin_gateway_business_sweep_executions{status="confirming"} > 0 and (time() - stablecoin_gateway_business_sweep_execution_oldest_state_timestamp_seconds{status="confirming"}) > 900
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 归集确认时间过长
+          description: 最早一笔 confirming 归集创建已超过 15 分钟，请检查节点与链上交易。
+
       - alert: StablecoinGatewayIndexerCursorStale
         expr: (time() - stablecoin_gateway_business_indexer_cursor_updated_timestamp_seconds) > 120
         for: 2m

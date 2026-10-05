@@ -5,6 +5,7 @@ import "context"
 
 var (
 	payoutStatuses         = []string{"pending_review", "approved", "ready_for_broadcast", "confirming"}
+	sweepExecutionStatuses = []string{"planned", "ready_for_broadcast", "confirming", "failed"}
 	outboxStatuses         = []string{"pending", "processing", "dead"}
 	reconciliationKinds    = []string{"ledger_integrity", "wallet_assets"}
 	reconciliationSeverity = []string{"warning", "critical"}
@@ -28,6 +29,7 @@ type CursorSnapshot struct {
 type Snapshot struct {
 	OpenReconciliationCases   map[string]int64
 	Payouts                   map[string]CountAndOldest
+	SweepExecutions           map[string]CountAndOldest
 	Outbox                    map[string]CountAndOldest
 	IndexerCursors            map[string]CursorSnapshot
 	LastReconciliationRun     map[string]float64
