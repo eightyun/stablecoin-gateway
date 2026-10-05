@@ -209,16 +209,25 @@ func TestStoreReconcilesWalletAndLedgerCheckpoint(t *testing.T) {
 	`, walletID, assetID, "wallet-"+walletID); err != nil {
 		t.Fatalf("创建钱包对账测试钱包: %v", err)
 	}
-	insertSnapshot := func(total int64, capturedAt time.Time) string {
+	insertSnapshot := func(total, payoutInFlight, sweepInFlight int64, capturedAt time.Time) string {
 		t.Helper()
 		runID := reconciliationUUID(t)
+		payoutCount, sweepCount := 0, 0
+		if payoutInFlight > 0 {
+			payoutCount = 1
+		}
+		if sweepInFlight > 0 {
+			sweepCount = 1
+		}
 		if _, err := pool.Exec(ctx, `
 			INSERT INTO wallet_balance_snapshot_runs (
 				id, asset_id, block_height, block_hash, block_time, wallet_count, total_balance,
-				captured_at, ledger_account_id, ledger_entry_count, ledger_balance
-			) VALUES ($1, $2, 100, $3, $4, 1, $5, $6, $7, 1, 100)
+				captured_at, ledger_account_id, ledger_entry_count, ledger_balance,
+				payout_in_flight_count, payout_in_flight_amount,
+				sweep_in_flight_count, sweep_in_flight_amount
+			) VALUES ($1, $2, 100, $3, $4, 1, $5, $6, $7, 1, 100, $8, $9, $10, $11)
 		`, runID, assetID, strings.Repeat("d", 64), capturedAt, total, capturedAt,
-			custodyAccountID); err != nil {
+			custodyAccountID, payoutCount, payoutInFlight, sweepCount, sweepInFlight); err != nil {
 			t.Fatalf("创建钱包对账快照运行: %v", err)
 		}
 		if _, err := pool.Exec(ctx, `
@@ -235,15 +244,17 @@ func TestStoreReconcilesWalletAndLedgerCheckpoint(t *testing.T) {
 		t.Fatalf("NewStore() error = %v", err)
 	}
 	baseTime := time.Now().UTC().Add(-3 * time.Minute)
-	insertSnapshot(90, baseTime)
+	insertSnapshot(90, 0, 20, baseTime)
 	shortfallRun, err := store.RunWalletAssets(ctx)
 	if err != nil || shortfallRun.Kind != RunKindWalletAssets || shortfallRun.CheckedItems < 1 || shortfallRun.FindingCount < 1 {
 		t.Fatalf("短款 RunWalletAssets() = %+v, %v", shortfallRun, err)
 	}
 	assertWalletCase(t, pool, shortfallRun.RunID, assetID,
 		ruleWalletCustodyBalanceShortfall, SeverityCritical, `"difference": "-10"`)
+	assertWalletCase(t, pool, shortfallRun.RunID, assetID,
+		ruleWalletCustodyBalanceShortfall, SeverityCritical, `"sweep_in_flight_amount": "20"`)
 
-	insertSnapshot(110, baseTime.Add(time.Minute))
+	insertSnapshot(110, 0, 0, baseTime.Add(time.Minute))
 	excessRun, err := store.RunWalletAssets(ctx)
 	if err != nil || excessRun.FindingCount < 1 {
 		t.Fatalf("长款 RunWalletAssets() = %+v, %v", excessRun, err)
@@ -251,7 +262,7 @@ func TestStoreReconcilesWalletAndLedgerCheckpoint(t *testing.T) {
 	assertWalletCase(t, pool, excessRun.RunID, assetID,
 		ruleWalletCustodyBalanceExcess, SeverityWarning, `"difference": "10"`)
 
-	insertSnapshot(100, baseTime.Add(2*time.Minute))
+	insertSnapshot(100, 0, 0, baseTime.Add(2*time.Minute))
 	equalRun, err := store.RunWalletAssets(ctx)
 	if err != nil {
 		t.Fatalf("相等 RunWalletAssets() error = %v", err)
@@ -264,6 +275,20 @@ func TestStoreReconcilesWalletAndLedgerCheckpoint(t *testing.T) {
 		WHERE observation.run_id = $1 AND reconciliation_case.asset_id = $2
 	`, equalRun.RunID, assetID).Scan(&observations); err != nil || observations != 0 {
 		t.Fatalf("相等快照 observations=%d error=%v", observations, err)
+	}
+
+	insertSnapshot(90, 10, 0, baseTime.Add(3*time.Minute))
+	inFlightRun, err := store.RunWalletAssets(ctx)
+	if err != nil {
+		t.Fatalf("在途区间 RunWalletAssets() error = %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM reconciliation_observations AS observation
+		JOIN reconciliation_cases AS reconciliation_case ON reconciliation_case.id = observation.case_id
+		WHERE observation.run_id = $1 AND reconciliation_case.asset_id = $2
+	`, inFlightRun.RunID, assetID).Scan(&observations); err != nil || observations != 0 {
+		t.Fatalf("在途区间 observations=%d error=%v", observations, err)
 	}
 }
 

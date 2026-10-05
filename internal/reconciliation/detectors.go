@@ -46,23 +46,33 @@ type semanticEvidence struct {
 }
 
 type walletBalanceEvidence struct {
-	SnapshotRunID    string    `json:"snapshot_run_id"`
-	BlockHeight      int64     `json:"block_height"`
-	BlockHash        string    `json:"block_hash"`
-	BlockTime        time.Time `json:"block_time"`
-	CapturedAt       time.Time `json:"captured_at"`
-	WalletCount      int64     `json:"wallet_count"`
-	LedgerEntryCount int64     `json:"ledger_entry_count"`
-	ChainBalance     string    `json:"chain_balance"`
-	LedgerBalance    string    `json:"ledger_balance"`
-	Difference       string    `json:"difference"`
+	SnapshotRunID       string    `json:"snapshot_run_id"`
+	BlockHeight         int64     `json:"block_height"`
+	BlockHash           string    `json:"block_hash"`
+	BlockTime           time.Time `json:"block_time"`
+	CapturedAt          time.Time `json:"captured_at"`
+	WalletCount         int64     `json:"wallet_count"`
+	LedgerEntryCount    int64     `json:"ledger_entry_count"`
+	ChainBalance        string    `json:"chain_balance"`
+	PayoutInFlightCount int64     `json:"payout_in_flight_count"`
+	PayoutInFlight      string    `json:"payout_in_flight_amount"`
+	SweepInFlightCount  int64     `json:"sweep_in_flight_count"`
+	SweepInFlight       string    `json:"sweep_in_flight_amount"`
+	AssetLowerBound     string    `json:"asset_lower_bound"`
+	AssetUpperBound     string    `json:"asset_upper_bound"`
+	LedgerBalance       string    `json:"ledger_balance"`
+	Difference          string    `json:"difference"`
+	DifferenceToLower   string    `json:"difference_to_lower"`
+	DifferenceToUpper   string    `json:"difference_to_upper"`
 }
 
 const latestWalletSnapshots = `
 	WITH latest_wallet_snapshots AS (
 		SELECT DISTINCT ON (asset_id)
 		       id, asset_id, block_height, block_hash, block_time, captured_at,
-		       wallet_count, total_balance, ledger_entry_count, ledger_balance
+		       wallet_count, total_balance, ledger_entry_count, ledger_balance,
+		       payout_in_flight_count, payout_in_flight_amount,
+		       sweep_in_flight_count, sweep_in_flight_amount
 		FROM wallet_balance_snapshot_runs
 		WHERE ledger_account_id IS NOT NULL
 		ORDER BY asset_id, block_height DESC, captured_at DESC, id DESC
@@ -78,18 +88,30 @@ func detectWalletCustodyBalanceMismatches(ctx context.Context, transaction pgx.T
 	}
 	rows, err := transaction.Query(ctx, latestWalletSnapshots+`
 		SELECT id::TEXT, asset_id, block_height, block_hash, block_time, captured_at,
-		       wallet_count, ledger_entry_count, total_balance::TEXT, ledger_balance::TEXT,
-		       (total_balance - ledger_balance)::TEXT,
+		       wallet_count, ledger_entry_count, total_balance::TEXT,
+		       payout_in_flight_count, payout_in_flight_amount::TEXT,
+		       sweep_in_flight_count, sweep_in_flight_amount::TEXT,
+		       total_balance::TEXT,
+		       (total_balance + payout_in_flight_amount)::TEXT,
+		       ledger_balance::TEXT,
 		       CASE
-		           WHEN total_balance < ledger_balance THEN $1
+		           WHEN ledger_balance > total_balance + payout_in_flight_amount
+		               THEN (total_balance + payout_in_flight_amount - ledger_balance)::TEXT
+		           ELSE (total_balance - ledger_balance)::TEXT
+		       END,
+		       (total_balance - ledger_balance)::TEXT,
+		       (total_balance + payout_in_flight_amount - ledger_balance)::TEXT,
+		       CASE
+		           WHEN ledger_balance > total_balance + payout_in_flight_amount THEN $1
 		           ELSE $2
 		       END,
 		       CASE
-		           WHEN total_balance < ledger_balance THEN $3
+		           WHEN ledger_balance > total_balance + payout_in_flight_amount THEN $3
 		           ELSE $4
 		       END
 		FROM latest_wallet_snapshots
-		WHERE total_balance IS DISTINCT FROM ledger_balance
+		WHERE ledger_balance > total_balance + payout_in_flight_amount
+		   OR ledger_balance < total_balance
 		ORDER BY asset_id
 	`, SeverityCritical, SeverityWarning,
 		ruleWalletCustodyBalanceShortfall, ruleWalletCustodyBalanceExcess)
@@ -104,8 +126,12 @@ func detectWalletCustodyBalanceMismatches(ctx context.Context, transaction pgx.T
 		if err := rows.Scan(
 			&evidence.SnapshotRunID, &assetID, &evidence.BlockHeight, &evidence.BlockHash,
 			&evidence.BlockTime, &evidence.CapturedAt, &evidence.WalletCount,
-			&evidence.LedgerEntryCount, &evidence.ChainBalance, &evidence.LedgerBalance,
-			&evidence.Difference, &severity, &ruleCode,
+			&evidence.LedgerEntryCount, &evidence.ChainBalance,
+			&evidence.PayoutInFlightCount, &evidence.PayoutInFlight,
+			&evidence.SweepInFlightCount, &evidence.SweepInFlight,
+			&evidence.AssetLowerBound, &evidence.AssetUpperBound, &evidence.LedgerBalance,
+			&evidence.Difference, &evidence.DifferenceToLower, &evidence.DifferenceToUpper,
+			&severity, &ruleCode,
 		); err != nil {
 			return nil, 0, fmt.Errorf("读取钱包资产对账差异: %w", err)
 		}

@@ -44,14 +44,14 @@ Implemented components:
 - Separate available and frozen balance reporting
 - Repeatable-read reconciliation of ledger references, amounts, debit/credit direction, and account ownership, with deduplicated cases and audited resolution
 - Unified custody-wallet registration and finalized TRC20 wallet snapshots bound to stable ledger checkpoints
-- Custody asset reconciliation between on-chain totals and the ledger checkpoint captured with the same snapshot, with separate shortfall and excess cases
+- Bounded custody reconciliation across finalized wallet balances, ledger checkpoints, and payout/sweep in-flight evidence, with separate shortfall and excess cases
 - Prometheus metrics, liveness probes, and PostgreSQL readiness probes for long-running fund workers
 - A dedicated business-risk monitor with Prometheus alerts for reconciliation findings, payout backlog, Outbox dead letters, stalled indexing, and stale scheduled controls
 - A leased payout-address screening worker with immutable results; missing, non-allow, or expired screening evidence blocks approval
 - A finalized-event-driven inbound screening worker; only a current allow can be credited, while deny/review results are quarantined
 - A finalized-snapshot sweep planner with balance preflight, isolated signing, exact-transaction broadcast recovery, and finalized execution state
 
-Not yet implemented: complete four-layer reconciliation across chain, ledger, in-flight funds, and providers, monitoring dashboards, and a production KMS/HSM/MPC signing backend.
+Not yet implemented: external fiat/PSP provider balance adapters and reconciliation, monitoring dashboards, and a production KMS/HSM/MPC signing backend.
 
 ## Local Development
 
@@ -91,7 +91,7 @@ export GATEWAY_TRON_API_KEY='OPTIONAL_NODE_API_KEY'
 go run ./cmd/gateway-wallet-snapshot
 ```
 
-The migration backfills existing deposit addresses as `deposit` custody wallets, and new deposit addresses are registered atomically. The command checks the custody-ledger checkpoint before and after chain reads and again while saving; it fails safely if the ledger changes or a payout is awaiting broadcast/finality. It never adjusts balances automatically.
+The migration backfills existing deposit addresses as `deposit` custody wallets, and new deposit addresses are registered atomically. The command checks the custody-ledger and in-flight checkpoint before and after chain reads and again while saving; it fails safely if that checkpoint changes. In-flight payouts and sweeps are persisted as immutable snapshot evidence instead of blocking continuous reconciliation. The command never adjusts balances automatically.
 
 Create sweep plans from the latest finalized snapshot:
 
@@ -151,7 +151,7 @@ go run ./cmd/gateway-reconcile
 go run ./cmd/gateway-admin list-reconciliation-cases --limit 100
 ```
 
-Reconciliation only detects discrepancies; it never changes ledger or business state automatically. After verification and manual remediation, resolve the case with audited operator details:
+Wallet-asset reconciliation uses a conservative interval. Its lower bound is the finalized custody-wallet balance; its upper bound adds payouts whose broadcast outcome remains uncertain. Ledger custody above the upper bound is a shortfall, while custody below the lower bound is an excess. Sweeps move funds between custody wallets, so they are recorded as in-flight evidence without being counted twice. Reconciliation only detects discrepancies; it never changes ledger or business state automatically. After verification and manual remediation, resolve the case with audited operator details:
 
 ```bash
 go run ./cmd/gateway-admin resolve-reconciliation-case \

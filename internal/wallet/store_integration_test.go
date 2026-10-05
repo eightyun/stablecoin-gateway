@@ -111,7 +111,7 @@ func TestStoreRejectsLedgerChangeBeforeSave(t *testing.T) {
 	}
 }
 
-func TestStoreRejectsSnapshotWithPayoutInFlight(t *testing.T) {
+func TestStoreCapturesPayoutInFlightEvidence(t *testing.T) {
 	store, pool, asset, wallets := newWalletStoreFixture(t)
 	merchantID := walletUUID(t)
 	if _, err := pool.Exec(context.Background(), `
@@ -127,11 +127,11 @@ func TestStoreRejectsSnapshotWithPayoutInFlight(t *testing.T) {
 			id, merchant_id, asset_id, idempotency_key, merchant_reference,
 			request_hash, destination_address, amount, status, freeze_transaction_id,
 			reviewed_by, review_reason, reviewed_at, signing_attempts,
-			transaction_id, signed_transaction, transaction_expires_at
+			transaction_id, signed_transaction, transaction_expires_at, broadcast_attempts
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, 1, 'ready_for_broadcast', $8,
 			'integration-test', 'approved test payout', CURRENT_TIMESTAMP, 1,
-			$9, decode('01', 'hex'), CURRENT_TIMESTAMP + INTERVAL '1 hour'
+			$9, decode('01', 'hex'), CURRENT_TIMESTAMP + INTERVAL '1 hour', 1
 		)
 	`, payoutID, merchantID, asset.ID, "payout-"+payoutID, "payout-"+payoutID,
 		strings.Repeat("b", 64), walletHexAddress(t), freezeTransactionID,
@@ -139,11 +139,35 @@ func TestStoreRejectsSnapshotWithPayoutInFlight(t *testing.T) {
 		t.Fatalf("创建在途出款: %v", err)
 	}
 	checkpoint, err := store.LedgerCheckpoint(context.Background(), asset.ID)
-	if err != nil || checkpoint.InFlightPayouts != 1 {
+	if err != nil || checkpoint.PayoutInFlightCount != 1 || checkpoint.PayoutInFlightAmount != "1" ||
+		checkpoint.SweepInFlightCount != 0 || checkpoint.SweepInFlightAmount != "0" {
 		t.Fatalf("LedgerCheckpoint() = %+v, %v", checkpoint, err)
 	}
-	if _, err := store.CaptureSnapshot(context.Background(), nil, asset, wallets); !errors.Is(err, ErrPayoutInFlight) {
-		t.Fatalf("CaptureSnapshot() error = %v", err)
+	header := snapshotHeader(12, "1")
+	reader := &balanceReaderStub{
+		headers: []tron.Header{header, header},
+		balances: map[string]string{
+			wallets[0].Address: "7", wallets[1].Address: "5",
+		},
+	}
+	snapshot, err := store.CaptureSnapshot(context.Background(), reader, asset, wallets)
+	if err != nil || snapshot.Ledger != checkpoint {
+		t.Fatalf("CaptureSnapshot() = %+v, %v", snapshot, err)
+	}
+	if err := store.SaveSnapshot(context.Background(), snapshot); err != nil {
+		t.Fatalf("SaveSnapshot() error = %v", err)
+	}
+	var payoutCount, sweepCount int64
+	var payoutAmount, sweepAmount string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT payout_in_flight_count, payout_in_flight_amount::TEXT,
+		       sweep_in_flight_count, sweep_in_flight_amount::TEXT
+		FROM wallet_balance_snapshot_runs
+		WHERE id = $1
+	`, snapshot.ID).Scan(&payoutCount, &payoutAmount, &sweepCount, &sweepAmount); err != nil ||
+		payoutCount != 1 || payoutAmount != "1" || sweepCount != 0 || sweepAmount != "0" {
+		t.Fatalf("在途快照证据 payout=%d/%s sweep=%d/%s error=%v",
+			payoutCount, payoutAmount, sweepCount, sweepAmount, err)
 	}
 }
 

@@ -14,15 +14,17 @@ import (
 var (
 	ErrLedgerUnavailable = errors.New("托管账本科目不存在或余额无效")
 	ErrLedgerChanged     = errors.New("钱包采集期间托管账本发生变化")
-	ErrPayoutInFlight    = errors.New("存在待广播或待确认出款")
 )
 
 // LedgerCheckpoint 是钱包余额采集期间保持稳定的托管账本状态。
 type LedgerCheckpoint struct {
-	AccountID       string
-	EntryCount      int64
-	Balance         string
-	InFlightPayouts int64
+	AccountID            string
+	EntryCount           int64
+	Balance              string
+	PayoutInFlightCount  int64
+	PayoutInFlightAmount string
+	SweepInFlightCount   int64
+	SweepInFlightAmount  string
 }
 
 type checkpointQuerier interface {
@@ -34,7 +36,7 @@ func (store *Store) LedgerCheckpoint(ctx context.Context, assetID string) (Ledge
 	return readLedgerCheckpoint(ctx, store.db, strings.TrimSpace(assetID))
 }
 
-// CaptureSnapshot 只在账本稳定且没有链上在途出款时形成可对账的钱包快照。
+// CaptureSnapshot 在账本和在途资金检查点稳定时形成可对账的钱包快照。
 func (store *Store) CaptureSnapshot(
 	ctx context.Context,
 	reader tron.TokenBalanceReader,
@@ -45,9 +47,6 @@ func (store *Store) CaptureSnapshot(
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if before.InFlightPayouts != 0 {
-		return Snapshot{}, ErrPayoutInFlight
-	}
 	snapshot, err := CollectSnapshot(ctx, reader, asset, wallets)
 	if err != nil {
 		return Snapshot{}, err
@@ -55,9 +54,6 @@ func (store *Store) CaptureSnapshot(
 	after, err := store.LedgerCheckpoint(ctx, asset.ID)
 	if err != nil {
 		return Snapshot{}, err
-	}
-	if after.InFlightPayouts != 0 {
-		return Snapshot{}, ErrPayoutInFlight
 	}
 	if before != after {
 		return Snapshot{}, ErrLedgerChanged
@@ -76,6 +72,24 @@ func readLedgerCheckpoint(
 	}
 	var checkpoint LedgerCheckpoint
 	err := querier.QueryRow(ctx, `
+		WITH payout_in_flight AS (
+			SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS amount
+			FROM payouts
+			WHERE asset_id = $1
+			  AND (
+			      status = 'confirming'
+			      OR (status = 'ready_for_broadcast' AND broadcast_attempts > 0)
+			  )
+		), sweep_in_flight AS (
+			SELECT COUNT(*) AS count, COALESCE(SUM(plan.amount), 0) AS amount
+			FROM sweep_executions AS execution
+			JOIN sweep_plans AS plan ON plan.id = execution.plan_id
+			WHERE plan.asset_id = $1
+			  AND (
+			      execution.status = 'confirming'
+			      OR (execution.status = 'ready_for_broadcast' AND execution.broadcast_attempts > 0)
+			  )
+		)
 		SELECT account.id::TEXT,
 		       COUNT(journal.id),
 		       COALESCE(SUM(
@@ -85,13 +99,13 @@ func readLedgerCheckpoint(
 		               ELSE -entry.amount
 		           END
 		       ), 0)::TEXT,
-		       (
-		           SELECT COUNT(*)
-		           FROM payouts
-		           WHERE asset_id = $1
-		             AND status IN ('ready_for_broadcast', 'confirming')
-		       )
+		       payout_in_flight.count,
+		       payout_in_flight.amount::TEXT,
+		       sweep_in_flight.count,
+		       sweep_in_flight.amount::TEXT
 		FROM ledger_accounts AS account
+		CROSS JOIN payout_in_flight
+		CROSS JOIN sweep_in_flight
 		LEFT JOIN journal_entries AS entry ON entry.account_id = account.id
 		LEFT JOIN journal_transactions AS journal
 		  ON journal.id = entry.transaction_id AND journal.status = 'posted'
@@ -101,10 +115,14 @@ func readLedgerCheckpoint(
 		  AND account.code = 'custody'
 		  AND account.normal_side = 'D'
 		  AND account.status IN ('active', 'locked')
-		GROUP BY account.id, account.normal_side
+		GROUP BY account.id, account.normal_side,
+		         payout_in_flight.count, payout_in_flight.amount,
+		         sweep_in_flight.count, sweep_in_flight.amount
 	`, assetID).Scan(
 		&checkpoint.AccountID, &checkpoint.EntryCount,
-		&checkpoint.Balance, &checkpoint.InFlightPayouts,
+		&checkpoint.Balance, &checkpoint.PayoutInFlightCount,
+		&checkpoint.PayoutInFlightAmount, &checkpoint.SweepInFlightCount,
+		&checkpoint.SweepInFlightAmount,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return LedgerCheckpoint{}, ErrLedgerUnavailable
@@ -113,10 +131,22 @@ func readLedgerCheckpoint(
 		return LedgerCheckpoint{}, fmt.Errorf("读取托管账本检查点: %w", err)
 	}
 	if !identity.ValidUUID(checkpoint.AccountID) || checkpoint.EntryCount < 0 ||
-		checkpoint.InFlightPayouts < 0 {
+		checkpoint.PayoutInFlightCount < 0 || checkpoint.SweepInFlightCount < 0 {
 		return LedgerCheckpoint{}, ErrLedgerUnavailable
 	}
 	if _, valid := parseAmount(checkpoint.Balance); !valid {
+		return LedgerCheckpoint{}, ErrLedgerUnavailable
+	}
+	payoutAmount, valid := parseAmount(checkpoint.PayoutInFlightAmount)
+	if !valid {
+		return LedgerCheckpoint{}, ErrLedgerUnavailable
+	}
+	sweepAmount, valid := parseAmount(checkpoint.SweepInFlightAmount)
+	if !valid {
+		return LedgerCheckpoint{}, ErrLedgerUnavailable
+	}
+	if (checkpoint.PayoutInFlightCount == 0) != (payoutAmount.Sign() == 0) ||
+		(checkpoint.SweepInFlightCount == 0) != (sweepAmount.Sign() == 0) {
 		return LedgerCheckpoint{}, ErrLedgerUnavailable
 	}
 	return checkpoint, nil

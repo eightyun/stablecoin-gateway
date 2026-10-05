@@ -110,9 +110,6 @@ func (store *Store) SaveSnapshot(ctx context.Context, snapshot Snapshot) (err er
 	if err != nil {
 		return err
 	}
-	if checkpoint.InFlightPayouts != 0 {
-		return ErrPayoutInFlight
-	}
 	if checkpoint != snapshot.Ledger {
 		return ErrLedgerChanged
 	}
@@ -133,11 +130,15 @@ func (store *Store) SaveSnapshot(ctx context.Context, snapshot Snapshot) (err er
 	if _, err = transaction.Exec(ctx, `
 		INSERT INTO wallet_balance_snapshot_runs (
 			id, asset_id, block_height, block_hash, block_time, wallet_count, total_balance,
-			ledger_account_id, ledger_entry_count, ledger_balance
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			ledger_account_id, ledger_entry_count, ledger_balance,
+			payout_in_flight_count, payout_in_flight_amount,
+			sweep_in_flight_count, sweep_in_flight_amount
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 	`, snapshot.ID, snapshot.Asset.ID, int64(snapshot.Block.Height), snapshot.Block.Hash,
 		snapshot.Block.Timestamp, len(snapshot.Balances), snapshot.TotalBalance,
-		snapshot.Ledger.AccountID, snapshot.Ledger.EntryCount, snapshot.Ledger.Balance); err != nil {
+		snapshot.Ledger.AccountID, snapshot.Ledger.EntryCount, snapshot.Ledger.Balance,
+		snapshot.Ledger.PayoutInFlightCount, snapshot.Ledger.PayoutInFlightAmount,
+		snapshot.Ledger.SweepInFlightCount, snapshot.Ledger.SweepInFlightAmount); err != nil {
 		return fmt.Errorf("保存钱包快照运行: %w", err)
 	}
 	for _, balance := range snapshot.Balances {
@@ -184,10 +185,22 @@ func validateSnapshot(snapshot Snapshot) error {
 		strings.TrimSpace(snapshot.Asset.ID) == "" || strings.TrimSpace(snapshot.Asset.Network) == "" ||
 		strings.TrimSpace(snapshot.Asset.ContractAddress) == "" ||
 		!identity.ValidUUID(snapshot.Ledger.AccountID) || snapshot.Ledger.EntryCount < 0 ||
-		snapshot.Ledger.InFlightPayouts != 0 {
+		snapshot.Ledger.PayoutInFlightCount < 0 || snapshot.Ledger.SweepInFlightCount < 0 {
 		return ErrInvalidSnapshot
 	}
 	if _, valid := parseAmount(snapshot.Ledger.Balance); !valid {
+		return ErrInvalidSnapshot
+	}
+	if _, valid := parseAmount(snapshot.Ledger.PayoutInFlightAmount); !valid {
+		return ErrInvalidSnapshot
+	}
+	if _, valid := parseAmount(snapshot.Ledger.SweepInFlightAmount); !valid {
+		return ErrInvalidSnapshot
+	}
+	payoutInFlight, _ := parseAmount(snapshot.Ledger.PayoutInFlightAmount)
+	sweepInFlight, _ := parseAmount(snapshot.Ledger.SweepInFlightAmount)
+	if (snapshot.Ledger.PayoutInFlightCount == 0) != (payoutInFlight.Sign() == 0) ||
+		(snapshot.Ledger.SweepInFlightCount == 0) != (sweepInFlight.Sign() == 0) {
 		return ErrInvalidSnapshot
 	}
 	seen := make(map[string]struct{}, len(snapshot.Balances))
