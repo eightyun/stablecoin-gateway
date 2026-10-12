@@ -438,9 +438,23 @@ Only 2xx responses are successful. Delivery is at least once, so merchants must 
 
 ## Network Testing Gates
 
-- Nile now covers live deposit posting, a merchant-API-driven payout loop, a dedicated-address-to-hot-wallet sweep, safe-expiry recovery, and before-and-after custody reconciliation. The next phase adds broader fault injection, sustained operation, reconciliation, and monitoring.
+- Nile now covers live deposit posting, a merchant-API-driven payout loop, a dedicated-address-to-hot-wallet sweep, safe-expiry recovery, and before-and-after custody reconciliation.
+- Automated recovery exercises cover payout and sweep worker crashes during broadcast and confirmation. A stale lease cannot advance state, the replacement worker reuses only the original signed transaction and txID, payout settlement and its terminal event happen once, and a sweep never changes merchant ledgers.
 - Mainnet canarying starts only after sustained testnet operation, three-way reconciliation, monitoring and alerting, disaster-recovery exercises, and an external security audit pass.
 - Mainnet is never a general test environment. Every mainnet canary requires a defined loss limit, dual approval, and an emergency stop.
+
+Run the fund-execution recovery exercises against an isolated PostgreSQL database that has the latest migrations:
+
+```bash
+export GATEWAY_TEST_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway_recovery_test?sslmode=disable'
+
+go test -tags=integration ./internal/payout \
+  -run '^TestStoreExecutionLeaseTakeoverRecoversOriginalTransaction$' -count=1
+go test -tags=integration ./internal/sweep \
+  -run '^TestStoreExecutionLeaseTakeoverRecoversOriginalTransaction$' -count=1
+```
+
+These exercises create database-only test assets and simulated signed transactions. They do not access a node, broadcast, or read wallet keys. Production disaster-recovery acceptance still requires PostgreSQL backup restoration, node failover, and sustained multi-zone operation.
 
 Before starting the TRON indexer, configure the node, asset contract, initial scan height, and its parent block hash using [.env.example](.env.example), then run:
 

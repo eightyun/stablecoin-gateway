@@ -421,6 +421,81 @@ func TestStoreBroadcastConfirmationSettlesAndReleasesFunds(t *testing.T) {
 	})
 }
 
+func TestStoreExecutionLeaseTakeoverRecoversOriginalTransaction(t *testing.T) {
+	fixture := newPayoutFixture(t, 100)
+	drainApprovedPayouts(t, fixture.store)
+	drainExecutingPayouts(t, fixture.store)
+	payoutID := prepareSignedPayout(t, fixture, "recovery-takeover", "recovery-takeover-order", "60")
+
+	firstBroadcast, err := fixture.store.ClaimBroadcast(context.Background(), "executor-crashed", 20*time.Millisecond)
+	if err != nil || firstBroadcast.PayoutID != payoutID {
+		t.Fatalf("第一次 ClaimBroadcast() = %+v, %v", firstBroadcast, err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	secondBroadcast, err := fixture.store.ClaimBroadcast(context.Background(), "executor-replacement", time.Minute)
+	if err != nil || secondBroadcast.PayoutID != payoutID ||
+		secondBroadcast.LeaseEpoch != firstBroadcast.LeaseEpoch+1 ||
+		secondBroadcast.Transaction.ID != firstBroadcast.Transaction.ID ||
+		string(secondBroadcast.Transaction.Payload) != string(firstBroadcast.Transaction.Payload) {
+		t.Fatalf("广播接管 ClaimBroadcast() = %+v, %v", secondBroadcast, err)
+	}
+	if err := fixture.store.BeginConfirmation(
+		context.Background(), firstBroadcast, "accepted", "",
+	); !errors.Is(err, ErrExecutionLeaseLost) {
+		t.Fatalf("旧广播租约 BeginConfirmation() error = %v", err)
+	}
+	if err := fixture.store.BeginConfirmation(
+		context.Background(), secondBroadcast, "unknown", "broadcast_timeout",
+	); err != nil {
+		t.Fatalf("接管广播 BeginConfirmation() error = %v", err)
+	}
+
+	firstConfirmation, err := fixture.store.ClaimConfirmation(context.Background(), "confirmer-crashed", 20*time.Millisecond)
+	if err != nil || firstConfirmation.PayoutID != payoutID ||
+		firstConfirmation.Transaction.ID != firstBroadcast.Transaction.ID {
+		t.Fatalf("第一次 ClaimConfirmation() = %+v, %v", firstConfirmation, err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	secondConfirmation, err := fixture.store.ClaimConfirmation(context.Background(), "confirmer-replacement", time.Minute)
+	if err != nil || secondConfirmation.PayoutID != payoutID ||
+		secondConfirmation.LeaseEpoch != firstConfirmation.LeaseEpoch+1 ||
+		secondConfirmation.Transaction.ID != firstBroadcast.Transaction.ID ||
+		string(secondConfirmation.Transaction.Payload) != string(firstBroadcast.Transaction.Payload) {
+		t.Fatalf("确认接管 ClaimConfirmation() = %+v, %v", secondConfirmation, err)
+	}
+	if err := fixture.store.CompleteConfirmationSuccess(
+		context.Background(), firstConfirmation,
+	); !errors.Is(err, ErrExecutionLeaseLost) {
+		t.Fatalf("旧确认租约 CompleteConfirmationSuccess() error = %v", err)
+	}
+	available, frozen := fixture.balances(t)
+	if available != "40" || frozen != "60" {
+		t.Fatalf("旧租约尝试后余额 available=%s frozen=%s", available, frozen)
+	}
+	if err := fixture.store.CompleteConfirmationSuccess(context.Background(), secondConfirmation); err != nil {
+		t.Fatalf("接管确认 CompleteConfirmationSuccess() error = %v", err)
+	}
+	if err := fixture.store.CompleteConfirmationSuccess(
+		context.Background(), secondConfirmation,
+	); !errors.Is(err, ErrExecutionLeaseLost) {
+		t.Fatalf("重复终态 CompleteConfirmationSuccess() error = %v", err)
+	}
+	available, frozen = fixture.balances(t)
+	if available != "40" || frozen != "0" {
+		t.Fatalf("恢复结算后余额 available=%s frozen=%s", available, frozen)
+	}
+	details, err := fixture.store.Get(context.Background(), fixture.merchantID, payoutID)
+	if err != nil || details.Status != StatusSucceeded || details.TransactionID != firstBroadcast.Transaction.ID {
+		t.Fatalf("恢复后出款详情 = %+v, %v", details, err)
+	}
+	assertPayoutTerminalEvent(t, fixture.pool, payoutID, TopicPayoutSucceeded, payoutTerminalPayload{
+		PayoutID: payoutID, MerchantID: fixture.merchantID,
+		MerchantReference: "recovery-takeover-order", AssetID: fixture.assetID,
+		DestinationAddress: testDestination, Amount: "60", Status: StatusSucceeded,
+		TransactionID: firstBroadcast.Transaction.ID,
+	})
+}
+
 func assertPayoutTerminalEvent(
 	t *testing.T,
 	pool *pgxpool.Pool,

@@ -438,9 +438,23 @@ v1=HEX(HMAC_SHA256(secret, timestamp + "." + event_id + "." + raw_body))
 
 ## 网络测试门槛
 
-- 测试网：Nile 真实充值入账、商户 API 驱动的出款、专用充值地址到热钱包的归集均已完成，并验证了安全过期恢复和归集前后账实一致。下一阶段补齐更多故障注入、持续运行、对账与监控。
+- 测试网：Nile 真实充值入账、商户 API 驱动的出款、专用充值地址到热钱包的归集均已完成，并验证了安全过期恢复和归集前后账实一致。
+- 自动故障恢复：PostgreSQL 集成演练已覆盖出款与归集在广播、确认阶段的 Worker 崩溃接管；旧租约不能推进状态，新 Worker 只复用原始签名交易与 txID，出款终态只过账并发送一次事件，归集不修改商户账本。
 - 主网灰度：测试网持续运行、三角对账、监控告警、灾难恢复演练和外部安全审计全部通过后，才允许白名单与小额限额灰度。
 - 主网不作为普通测试环境；任何主网验证都必须有明确损失上限、双人审批和停止开关。
+
+在已迁移到最新版本的独立 PostgreSQL 测试数据库执行资金执行恢复演练：
+
+```bash
+export GATEWAY_TEST_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway_recovery_test?sslmode=disable'
+
+go test -tags=integration ./internal/payout \
+  -run '^TestStoreExecutionLeaseTakeoverRecoversOriginalTransaction$' -count=1
+go test -tags=integration ./internal/sweep \
+  -run '^TestStoreExecutionLeaseTakeoverRecoversOriginalTransaction$' -count=1
+```
+
+该演练仅构造数据库测试资产和模拟签名交易，不访问节点、不广播，也不读取任何钱包私钥。生产灾备验收仍需补充 PostgreSQL 备份恢复、节点切换和跨可用区持续运行。
 
 启动 TRON 索引器前，根据 [.env.example](.env.example) 配置节点、资产合约、扫描起点及其父区块哈希，然后运行：
 

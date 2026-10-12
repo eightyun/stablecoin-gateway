@@ -174,6 +174,98 @@ func TestStoreBroadcastsAndFinalizesSweep(t *testing.T) {
 	}
 }
 
+func TestStoreExecutionLeaseTakeoverRecoversOriginalTransaction(t *testing.T) {
+	store, pool, policy := newSweepFixture(t, "allow", "100", time.Hour)
+	plan, err := store.PlanNext(context.Background(), policy)
+	if err != nil {
+		t.Fatalf("PlanNext() error = %v", err)
+	}
+	network := "sweep-network-" + strings.TrimPrefix(policy.AssetID, "sweep-")
+	signing, err := store.ClaimSigning(context.Background(), "signer-recovery", network, time.Minute)
+	if err != nil {
+		t.Fatalf("ClaimSigning() error = %v", err)
+	}
+	transaction := sweepSignedTransaction(t)
+	observation := BalanceObservation{Balance: "100", BlockHeight: 12, BlockHash: strings.Repeat("d", 64)}
+	if err := store.CompleteSigning(context.Background(), signing, observation, transaction); err != nil {
+		t.Fatalf("CompleteSigning() error = %v", err)
+	}
+	var journalCountBefore int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT COUNT(DISTINCT transaction_id) FROM journal_entries WHERE asset_id = $1
+	`, policy.AssetID).Scan(&journalCountBefore); err != nil {
+		t.Fatalf("查询归集前账本分录: %v", err)
+	}
+
+	firstBroadcast, err := store.ClaimBroadcast(context.Background(), "executor-crashed", network, 20*time.Millisecond)
+	if err != nil || firstBroadcast.PlanID != plan.ID {
+		t.Fatalf("第一次 ClaimBroadcast() = %+v, %v", firstBroadcast, err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	secondBroadcast, err := store.ClaimBroadcast(context.Background(), "executor-replacement", network, time.Minute)
+	if err != nil || secondBroadcast.PlanID != plan.ID ||
+		secondBroadcast.LeaseEpoch != firstBroadcast.LeaseEpoch+1 ||
+		secondBroadcast.Transaction.ID != transaction.ID ||
+		string(secondBroadcast.Transaction.Payload) != string(transaction.Payload) {
+		t.Fatalf("广播接管 ClaimBroadcast() = %+v, %v", secondBroadcast, err)
+	}
+	if err := store.BeginConfirmation(
+		context.Background(), firstBroadcast, "accepted", "",
+	); !errors.Is(err, ErrExecutionLeaseLost) {
+		t.Fatalf("旧广播租约 BeginConfirmation() error = %v", err)
+	}
+	if err := store.BeginConfirmation(
+		context.Background(), secondBroadcast, "unknown", "broadcast_timeout",
+	); err != nil {
+		t.Fatalf("接管广播 BeginConfirmation() error = %v", err)
+	}
+
+	firstConfirmation, err := store.ClaimConfirmation(context.Background(), "confirmer-crashed", network, 20*time.Millisecond)
+	if err != nil || firstConfirmation.PlanID != plan.ID || firstConfirmation.Transaction.ID != transaction.ID {
+		t.Fatalf("第一次 ClaimConfirmation() = %+v, %v", firstConfirmation, err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	secondConfirmation, err := store.ClaimConfirmation(context.Background(), "confirmer-replacement", network, time.Minute)
+	if err != nil || secondConfirmation.PlanID != plan.ID ||
+		secondConfirmation.LeaseEpoch != firstConfirmation.LeaseEpoch+1 ||
+		secondConfirmation.Transaction.ID != transaction.ID ||
+		string(secondConfirmation.Transaction.Payload) != string(transaction.Payload) {
+		t.Fatalf("确认接管 ClaimConfirmation() = %+v, %v", secondConfirmation, err)
+	}
+	if err := store.CompleteConfirmationSuccess(
+		context.Background(), firstConfirmation,
+	); !errors.Is(err, ErrExecutionLeaseLost) {
+		t.Fatalf("旧确认租约 CompleteConfirmationSuccess() error = %v", err)
+	}
+	if err := store.CompleteConfirmationSuccess(context.Background(), secondConfirmation); err != nil {
+		t.Fatalf("接管确认 CompleteConfirmationSuccess() error = %v", err)
+	}
+	if err := store.CompleteConfirmationSuccess(
+		context.Background(), secondConfirmation,
+	); !errors.Is(err, ErrExecutionLeaseLost) {
+		t.Fatalf("重复终态 CompleteConfirmationSuccess() error = %v", err)
+	}
+	state, err := store.GetExecution(context.Background(), plan.ID)
+	if err != nil || state.Status != "succeeded" || state.TransactionID != transaction.ID {
+		t.Fatalf("恢复后归集状态 = %+v, %v", state, err)
+	}
+	var journalCountAfter, broadcastAttempts, confirmationAttempts int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT
+		    (SELECT COUNT(DISTINCT transaction_id) FROM journal_entries WHERE asset_id = $2),
+		    broadcast_attempts, confirmation_attempts
+		FROM sweep_executions WHERE plan_id = $1
+	`, plan.ID, policy.AssetID).Scan(
+		&journalCountAfter, &broadcastAttempts, &confirmationAttempts,
+	); err != nil {
+		t.Fatalf("查询归集恢复证据: %v", err)
+	}
+	if journalCountAfter != journalCountBefore || broadcastAttempts != 2 || confirmationAttempts != 2 {
+		t.Fatalf("归集恢复证据 journal=%d/%d broadcast=%d confirmation=%d",
+			journalCountBefore, journalCountAfter, broadcastAttempts, confirmationAttempts)
+	}
+}
+
 func TestStoreRejectsUnsafeProvenanceAndBalanceMismatch(t *testing.T) {
 	for _, test := range []struct {
 		name     string
