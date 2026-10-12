@@ -183,7 +183,8 @@ func (store *Store) planNext(ctx context.Context, policy Policy) (plan Plan, err
 					OR screening_job.destination_address IS DISTINCT FROM source.address
 					OR screening_job.status IS DISTINCT FROM 'closed'
 					OR screening_result.decision IS DISTINCT FROM 'allow'
-					OR screening_result.valid_until <= clock_timestamp()
+					OR screening_result.checked_at > event_match.created_at
+					OR screening_result.valid_until <= event_match.created_at
 				  )
 			  )
 			  AND balance.balance = (

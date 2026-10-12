@@ -106,6 +106,8 @@ go run ./cmd/gateway-sweep-planner
 
 Planner 要求资产恰好有一个活动热钱包、索引游标已越过快照高度，并验证截至该高度的全部入金事件均已成功匹配且入金地址筛查结果为 `allow`；入金事件总额扣除已成功归集额后，必须与地址快照余额完全一致。任一证据缺失都会跳过该地址。该进程只写不可变 `sweep_plans`，不读取私钥、不广播、不修改账本。
 
+Planner 校验筛查结果在充值匹配发生时仍然有效，而不是要求已经关闭的入金筛查结果在未来归集时仍未过期。该证据只证明“入账时允许”；生产环境若要求归集时重新评估地址风险，应部署独立的归集前筛查状态机，不能把历史结果当作当前风险结论。
+
 配置隔离 signer 并启动归集签名 Worker：
 
 ```bash
@@ -369,7 +371,7 @@ export GATEWAY_TRON_API_KEY='从密钥管理服务注入'
 go run ./cmd/gateway-payout-execution-worker
 ```
 
-上述配置已具备测试网签名、广播和确认链路。2026-09-27 已使用全新 Nile 专用钱包完成真实测试资产验收：[`e7f6ee9…aef39`](https://nile.tronscan.org/#/transaction/e7f6ee9ba5f10f119454d8df0a33b633ca6915a31f2847b82a1d5d25859aef39) 验证 signer 构造、签名、广播和 SolidityNode 固化确认；[`fa242e1b…cc82b`](https://nile.tronscan.org/#/transaction/fa242e1bdc988f926582b169944ddf6eeb64cac55c7e83e79d38e371385cc82b) 验证 Indexer 捕获真实 Transfer、Deposit Worker 匹配充值意图、双分录入账并生成 `deposit.confirmed` Outbox；[`86283b5f…e9ac`](https://nile.tronscan.org/#/transaction/86283b5fb90fc9aaf01162aff936df9c2c2b5ad7a89856ee972d691e87f0e9ac) 验证商户 API 创建出款、原子冻资、人工审批、私有 CA Signer、广播、固化确认和账本结算。同轮还验证了交易安全过期且未上链时自动失败并原子解冻。以上只是功能性实测，不等同于生产验收；生产环境仍应为节点端点配置独立容灾与监控。
+上述配置已具备测试网签名、广播和确认链路。2026-09-27 已使用全新 Nile 专用钱包完成真实测试资产验收：[`e7f6ee9…aef39`](https://nile.tronscan.org/#/transaction/e7f6ee9ba5f10f119454d8df0a33b633ca6915a31f2847b82a1d5d25859aef39) 验证 signer 构造、签名、广播和 SolidityNode 固化确认；[`fa242e1b…cc82b`](https://nile.tronscan.org/#/transaction/fa242e1bdc988f926582b169944ddf6eeb64cac55c7e83e79d38e371385cc82b) 验证 Indexer 捕获真实 Transfer、Deposit Worker 匹配充值意图、双分录入账并生成 `deposit.confirmed` Outbox；[`86283b5f…e9ac`](https://nile.tronscan.org/#/transaction/86283b5fb90fc9aaf01162aff936df9c2c2b5ad7a89856ee972d691e87f0e9ac) 验证商户 API 创建出款、原子冻资、人工审批、私有 CA Signer、广播、固化确认和账本结算。2026-10-12 又通过 [`6fd465a…073da648`](https://nile.tronscan.org/#/transaction/6fd465a762b3d48bd01f5a4c18e6b83322bece9b9045d5072d481aef073da648) 完成了 1,000 USDT 从专用充值地址到热钱包的真实归集，并验证了归集前后固化快照与账本托管余额一致。同轮还验证了交易安全过期且未上链时自动失败并原子解冻。以上只是功能性实测，不等同于生产验收；生产环境仍应为节点端点配置独立容灾与监控。
 
 在配置钱包和远程签名器前，先执行不持有私钥、不写链的 Nile 预检：
 
@@ -405,7 +407,7 @@ v1=HEX(HMAC_SHA256(secret, timestamp + "." + event_id + "." + raw_body))
 
 ## 网络测试门槛
 
-- 测试网：Nile 真实充值入账与商户 API 驱动的出款成功闭环已经完成，并验证了一条安全过期恢复路径；归集受控验收命令已就绪，尚待使用专用测试资产完成真实广播证据。下一阶段补齐更多故障注入、持续运行、对账与监控。
+- 测试网：Nile 真实充值入账、商户 API 驱动的出款、专用充值地址到热钱包的归集均已完成，并验证了安全过期恢复和归集前后账实一致。下一阶段补齐更多故障注入、持续运行、对账与监控。
 - 主网灰度：测试网持续运行、三角对账、监控告警、灾难恢复演练和外部安全审计全部通过后，才允许白名单与小额限额灰度。
 - 主网不作为普通测试环境；任何主网验证都必须有明确损失上限、双人审批和停止开关。
 

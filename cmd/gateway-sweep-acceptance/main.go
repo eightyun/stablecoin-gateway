@@ -149,7 +149,7 @@ func run(parent context.Context) error {
 	if err != nil {
 		return err
 	}
-	reconciliationResult, err := reconciliationStore.RunWalletAssets(ctx)
+	reconciliationResult, err := reconciliationStore.RunWalletAsset(ctx, asset.ID)
 	if err != nil {
 		return err
 	}

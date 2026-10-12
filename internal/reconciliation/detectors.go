@@ -75,15 +75,31 @@ const latestWalletSnapshots = `
 		       sweep_in_flight_count, sweep_in_flight_amount
 		FROM wallet_balance_snapshot_runs
 		WHERE ledger_account_id IS NOT NULL
+		  AND (@asset_id = '' OR asset_id = @asset_id)
 		ORDER BY asset_id, block_height DESC, captured_at DESC, id DESC
 	)
 `
 
 func detectWalletCustodyBalanceMismatches(ctx context.Context, transaction pgx.Tx) ([]finding, int64, error) {
+	return detectWalletCustodyBalanceMismatchesForAsset(ctx, transaction, "")
+}
+
+func walletCustodyBalanceDetector(assetID string) detector {
+	return func(ctx context.Context, transaction pgx.Tx) ([]finding, int64, error) {
+		return detectWalletCustodyBalanceMismatchesForAsset(ctx, transaction, assetID)
+	}
+}
+
+func detectWalletCustodyBalanceMismatchesForAsset(
+	ctx context.Context,
+	transaction pgx.Tx,
+	assetID string,
+) ([]finding, int64, error) {
 	var checked int64
 	if err := transaction.QueryRow(ctx, latestWalletSnapshots+`
-		SELECT COUNT(*) FROM latest_wallet_snapshots
-	`).Scan(&checked); err != nil {
+		SELECT COUNT(*)
+		FROM latest_wallet_snapshots
+	`, pgx.NamedArgs{"asset_id": assetID}).Scan(&checked); err != nil {
 		return nil, 0, fmt.Errorf("统计钱包资产对账项: %w", err)
 	}
 	rows, err := transaction.Query(ctx, latestWalletSnapshots+`
@@ -102,19 +118,24 @@ func detectWalletCustodyBalanceMismatches(ctx context.Context, transaction pgx.T
 		       (total_balance - ledger_balance)::TEXT,
 		       (total_balance + payout_in_flight_amount - ledger_balance)::TEXT,
 		       CASE
-		           WHEN ledger_balance > total_balance + payout_in_flight_amount THEN $1
-		           ELSE $2
+		           WHEN ledger_balance > total_balance + payout_in_flight_amount THEN @critical
+		           ELSE @warning
 		       END,
 		       CASE
-		           WHEN ledger_balance > total_balance + payout_in_flight_amount THEN $3
-		           ELSE $4
+		           WHEN ledger_balance > total_balance + payout_in_flight_amount THEN @shortfall_rule
+		           ELSE @excess_rule
 		       END
 		FROM latest_wallet_snapshots
 		WHERE ledger_balance > total_balance + payout_in_flight_amount
 		   OR ledger_balance < total_balance
 		ORDER BY asset_id
-	`, SeverityCritical, SeverityWarning,
-		ruleWalletCustodyBalanceShortfall, ruleWalletCustodyBalanceExcess)
+	`, pgx.NamedArgs{
+		"asset_id":       assetID,
+		"critical":       SeverityCritical,
+		"warning":        SeverityWarning,
+		"shortfall_rule": ruleWalletCustodyBalanceShortfall,
+		"excess_rule":    ruleWalletCustodyBalanceExcess,
+	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("检测钱包与托管账本余额差异: %w", err)
 	}

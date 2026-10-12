@@ -3,6 +3,7 @@ package reconciliation
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -44,5 +45,14 @@ func TestResolveCaseRejectsInvalidRequestBeforeDatabase(t *testing.T) {
 	}
 	if err := store.ResolveCase(context.Background(), ResolveRequest{}); !errors.Is(err, ErrInvalidResolve) {
 		t.Fatalf("ResolveCase() error = %v", err)
+	}
+}
+
+func TestRunWalletAssetRejectsInvalidAsset(t *testing.T) {
+	store := &Store{}
+	for _, assetID := range []string{"", "  ", strings.Repeat("a", 129)} {
+		if _, err := store.RunWalletAsset(context.Background(), assetID); !errors.Is(err, ErrInvalidAsset) {
+			t.Fatalf("RunWalletAsset(%q) error = %v", assetID, err)
+		}
 	}
 }

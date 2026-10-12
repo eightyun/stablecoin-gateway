@@ -191,9 +191,16 @@ func TestStoreRejectsUnsafeProvenanceAndBalanceMismatch(t *testing.T) {
 	}
 }
 
-func TestStoreRejectsExpiredScreeningEvidence(t *testing.T) {
+func TestStoreAcceptsScreeningEvidenceThatWasValidAtMatch(t *testing.T) {
 	store, _, policy := newSweepFixture(t, "allow", "100", 20*time.Millisecond)
 	time.Sleep(30 * time.Millisecond)
+	if _, err := store.PlanNext(context.Background(), policy); err != nil {
+		t.Fatalf("PlanNext() error = %v", err)
+	}
+}
+
+func TestStoreRejectsScreeningEvidenceExpiredAtMatch(t *testing.T) {
+	store, _, policy := newSweepFixture(t, "allow", "100", -30*time.Second)
 	if _, err := store.PlanNext(context.Background(), policy); !errors.Is(err, ErrNoCandidate) {
 		t.Fatalf("PlanNext() error = %v", err)
 	}
@@ -315,7 +322,7 @@ func newSweepFixture(t *testing.T, decision, snapshotBalance string, screeningVa
 			id, job_id, attempt, provider, decision, reason_codes,
 			provider_reference, response_hash, checked_at, valid_until
 		) VALUES ($1, $2, 1, 'sweep-test', $3, '[]'::jsonb,
-		          $4, $5, CURRENT_TIMESTAMP,
+		          $4, $5, CURRENT_TIMESTAMP - INTERVAL '1 minute',
 		          CURRENT_TIMESTAMP + ($6 * INTERVAL '1 millisecond'))
 	`, resultID, jobID, decision, "screening-"+unique, strings.Repeat("b", 64), screeningValidity.Milliseconds())
 	mustSweepExec(t, pool, `

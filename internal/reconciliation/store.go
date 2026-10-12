@@ -27,6 +27,7 @@ const (
 var (
 	ErrDatabaseRequired = errors.New("数据库连接不能为空")
 	ErrRunInProgress    = errors.New("已有对账任务正在执行")
+	ErrInvalidAsset     = errors.New("对账资产无效")
 	ErrInvalidList      = errors.New("对账工单查询请求无效")
 	ErrInvalidResolve   = errors.New("对账工单关闭请求无效")
 	ErrCaseNotOpen      = errors.New("对账工单不存在或已关闭")
@@ -99,6 +100,15 @@ func (store *Store) RunLedgerIntegrity(ctx context.Context) (result RunResult, e
 // RunWalletAssets 比较同一快照内的链上托管余额与账本托管余额。
 func (store *Store) RunWalletAssets(ctx context.Context) (result RunResult, err error) {
 	return store.run(ctx, RunKindWalletAssets, []detector{detectWalletCustodyBalanceMismatches})
+}
+
+// RunWalletAsset 只比较指定资产的链上托管余额与账本托管余额。
+func (store *Store) RunWalletAsset(ctx context.Context, assetID string) (result RunResult, err error) {
+	assetID = strings.TrimSpace(assetID)
+	if assetID == "" || len(assetID) > 128 {
+		return RunResult{}, ErrInvalidAsset
+	}
+	return store.run(ctx, RunKindWalletAssets, []detector{walletCustodyBalanceDetector(assetID)})
 }
 
 func (store *Store) run(ctx context.Context, kind string, detectors []detector) (result RunResult, err error) {

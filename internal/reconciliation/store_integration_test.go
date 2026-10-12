@@ -290,6 +290,55 @@ func TestStoreReconcilesWalletAndLedgerCheckpoint(t *testing.T) {
 	`, inFlightRun.RunID, assetID).Scan(&observations); err != nil || observations != 0 {
 		t.Fatalf("在途区间 observations=%d error=%v", observations, err)
 	}
+
+	unrelatedAssetID := "wallet-recon-unrelated-" + reconciliationUUID(t)
+	unrelatedCustodyID, unrelatedEquityID := reconciliationUUID(t), reconciliationUUID(t)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO assets (id, network, contract_address, symbol, decimals, status)
+		VALUES ($1, 'tron-wallet-reconciliation', $2, 'USDT', 6, 'active')
+	`, unrelatedAssetID, "contract-"+unrelatedAssetID); err != nil {
+		t.Fatalf("创建无关差异资产: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO ledger_accounts (id, owner_type, owner_id, asset_id, code, normal_side, status)
+		VALUES
+			($1, 'platform', 'gateway', $3, 'custody', 'D', 'active'),
+			($2, 'platform', 'gateway', $3, 'equity', 'C', 'active')
+	`, unrelatedCustodyID, unrelatedEquityID, unrelatedAssetID); err != nil {
+		t.Fatalf("创建无关差异账本科目: %v", err)
+	}
+	unrelatedJournalID := reconciliationUUID(t)
+	if _, err := repository.Post(ctx, ledger.Transaction{
+		ID: unrelatedJournalID, RequesterType: "system", RequesterID: "wallet-reconciliation-test",
+		IdempotencyKey: "seed:" + unrelatedJournalID, ReferenceType: "seed", ReferenceID: unrelatedJournalID,
+		Entries: []ledger.Entry{
+			{AccountID: unrelatedCustodyID, AssetID: unrelatedAssetID, Side: ledger.Debit, Amount: 100},
+			{AccountID: unrelatedEquityID, AssetID: unrelatedAssetID, Side: ledger.Credit, Amount: 100},
+		},
+	}); err != nil {
+		t.Fatalf("准备无关差异账务: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO wallet_balance_snapshot_runs (
+			id, asset_id, block_height, block_hash, block_time, wallet_count, total_balance,
+			captured_at, ledger_account_id, ledger_entry_count, ledger_balance,
+			payout_in_flight_count, payout_in_flight_amount,
+			sweep_in_flight_count, sweep_in_flight_amount
+		) VALUES ($1, $2, 100, $3, $4, 1, 0, $4, $5, 1, 100, 0, 0, 0, 0)
+	`, reconciliationUUID(t), unrelatedAssetID, strings.Repeat("e", 64), time.Now().UTC(), unrelatedCustodyID); err != nil {
+		t.Fatalf("创建无关差异快照: %v", err)
+	}
+
+	targetRun, err := store.RunWalletAsset(ctx, assetID)
+	if err != nil || targetRun.CheckedItems != 1 || targetRun.FindingCount != 0 {
+		t.Fatalf("目标资产 RunWalletAsset() = %+v, %v", targetRun, err)
+	}
+	unrelatedRun, err := store.RunWalletAsset(ctx, unrelatedAssetID)
+	if err != nil || unrelatedRun.CheckedItems != 1 || unrelatedRun.FindingCount != 1 {
+		t.Fatalf("无关差异资产 RunWalletAsset() = %+v, %v", unrelatedRun, err)
+	}
+	assertWalletCase(t, pool, unrelatedRun.RunID, unrelatedAssetID,
+		ruleWalletCustodyBalanceShortfall, SeverityCritical, `"difference": "-100"`)
 }
 
 func assertWalletCase(

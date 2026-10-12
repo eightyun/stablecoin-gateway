@@ -106,6 +106,8 @@ go run ./cmd/gateway-sweep-planner
 
 The planner requires exactly one active hot wallet, an indexer cursor beyond the snapshot height, and proof that every inbound event through that height was matched and allowed by inbound address screening. Total inbound events minus prior successful sweeps must exactly equal the snapshotted address balance. Missing evidence fails closed. The process only writes immutable `sweep_plans`; it never reads private keys, broadcasts transactions, or changes the ledger.
 
+The planner verifies that screening was valid when the deposit match was created; it does not require a closed inbound-screening result to remain unexpired indefinitely. This evidence proves only that the deposit was allowed at posting time. Deployments that require current risk evaluation before sweeping must add an independent pre-sweep screening state machine instead of treating historical evidence as a current risk decision.
+
 Configure an isolated signer and start the sweep-signing worker:
 
 ```bash
@@ -369,7 +371,7 @@ export GATEWAY_TRON_API_KEY='injected-by-your-secrets-manager'
 go run ./cmd/gateway-payout-execution-worker
 ```
 
-This configuration provides the testnet signing, broadcast, and confirmation path. On 2026-09-27, a fresh Nile-only wallet completed live test-asset checks: [`e7f6ee9…aef39`](https://nile.tronscan.org/#/transaction/e7f6ee9ba5f10f119454d8df0a33b633ca6915a31f2847b82a1d5d25859aef39) covered signer construction, signing, broadcast, and SolidityNode finalization; [`fa242e1b…cc82b`](https://nile.tronscan.org/#/transaction/fa242e1bdc988f926582b169944ddf6eeb64cac55c7e83e79d38e371385cc82b) covered Indexer ingestion of a real Transfer, Deposit Worker intent matching, double-entry posting, and creation of the `deposit.confirmed` Outbox event; and [`86283b5f…e9ac`](https://nile.tronscan.org/#/transaction/86283b5fb90fc9aaf01162aff936df9c2c2b5ad7a89856ee972d691e87f0e9ac) covered merchant API payout creation, atomic freezing, manual approval, a private-CA signer, broadcast, finalization, and ledger settlement. The same run also verified automatic failure and atomic fund release when a transaction safely expired without reaching the chain. This is functional testnet evidence rather than production acceptance; production deployments still need independent node failover and monitoring.
+This configuration provides the testnet signing, broadcast, and confirmation path. On 2026-09-27, a fresh Nile-only wallet completed live test-asset checks: [`e7f6ee9…aef39`](https://nile.tronscan.org/#/transaction/e7f6ee9ba5f10f119454d8df0a33b633ca6915a31f2847b82a1d5d25859aef39) covered signer construction, signing, broadcast, and SolidityNode finalization; [`fa242e1b…cc82b`](https://nile.tronscan.org/#/transaction/fa242e1bdc988f926582b169944ddf6eeb64cac55c7e83e79d38e371385cc82b) covered Indexer ingestion of a real Transfer, Deposit Worker intent matching, double-entry posting, and creation of the `deposit.confirmed` Outbox event; and [`86283b5f…e9ac`](https://nile.tronscan.org/#/transaction/86283b5fb90fc9aaf01162aff936df9c2c2b5ad7a89856ee972d691e87f0e9ac) covered merchant API payout creation, atomic freezing, manual approval, a private-CA signer, broadcast, finalization, and ledger settlement. On 2026-10-12, [`6fd465a…073da648`](https://nile.tronscan.org/#/transaction/6fd465a762b3d48bd01f5a4c18e6b83322bece9b9045d5072d481aef073da648) completed a live 1,000 USDT sweep from a dedicated deposit address to the hot wallet, with finalized before-and-after snapshots matching the custody ledger. The same test cycle also verified automatic failure and atomic fund release when a transaction safely expired without reaching the chain. This is functional testnet evidence rather than production acceptance; production deployments still need independent node failover and monitoring.
 
 Before configuring a wallet and remote signer, run the read-only Nile preflight, which holds no private key and writes nothing on-chain:
 
@@ -405,7 +407,7 @@ Only 2xx responses are successful. Delivery is at least once, so merchants must 
 
 ## Network Testing Gates
 
-- Nile now covers live deposit posting, a merchant-API-driven successful payout loop, and one safe-expiry recovery path. The bounded sweep acceptance command is ready, but its live test-asset broadcast evidence is still pending. The next phase adds broader fault injection, sustained operation, reconciliation, and monitoring.
+- Nile now covers live deposit posting, a merchant-API-driven payout loop, a dedicated-address-to-hot-wallet sweep, safe-expiry recovery, and before-and-after custody reconciliation. The next phase adds broader fault injection, sustained operation, reconciliation, and monitoring.
 - Mainnet canarying starts only after sustained testnet operation, three-way reconciliation, monitoring and alerting, disaster-recovery exercises, and an external security audit pass.
 - Mainnet is never a general test environment. Every mainnet canary requires a defined loss limit, dual approval, and an emergency stop.
 
