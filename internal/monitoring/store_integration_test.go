@@ -31,7 +31,12 @@ func TestStoreSnapshotAgainstMigratedDatabase(t *testing.T) {
 	network := "monitoring-" + uniqueID
 	assetID := "monitoring-asset-" + uniqueID
 	walletID := mustMonitoringUUID(t)
+	sourceWalletID := mustMonitoringUUID(t)
+	blockedWalletID := mustMonitoringUUID(t)
 	snapshotID := mustMonitoringUUID(t)
+	pendingSweepScreeningID := mustMonitoringUUID(t)
+	blockedSweepScreeningID := mustMonitoringUUID(t)
+	blockedSweepResultID := mustMonitoringUUID(t)
 	reconciliationRunID := mustMonitoringUUID(t)
 	globalWalletRunID := mustMonitoringUUID(t)
 	scopedWalletRunID := mustMonitoringUUID(t)
@@ -46,21 +51,59 @@ func TestStoreSnapshotAgainstMigratedDatabase(t *testing.T) {
 	`, assetID, network, "contract-"+uniqueID)
 	mustMonitoringExec(t, ctx, tx, `
 		INSERT INTO custody_wallets (id, asset_id, address, role, status)
-		VALUES ($1, $2, $3, 'hot', 'active')
-	`, walletID, assetID, "wallet-"+uniqueID)
+		VALUES ($1, $2, $3, 'hot', 'active'),
+		       ($4, $2, $5, 'deposit', 'active'),
+		       ($6, $2, $7, 'deposit', 'active')
+	`, walletID, assetID, "wallet-"+uniqueID,
+		sourceWalletID, "source-"+uniqueID,
+		blockedWalletID, "blocked-"+uniqueID)
 	mustMonitoringExec(t, ctx, tx, `
 		INSERT INTO custody_wallet_registration_audits (id, wallet_id, actor, reason)
-		VALUES ($1, $2, 'monitoring-test', 'business monitoring integration fixture')
-	`, mustMonitoringUUID(t), walletID)
+		VALUES ($1, $2, 'monitoring-test', 'business monitoring integration fixture'),
+		       ($3, $4, 'monitoring-test', 'pending sweep screening fixture'),
+		       ($5, $6, 'monitoring-test', 'blocked sweep screening fixture')
+	`, mustMonitoringUUID(t), walletID, mustMonitoringUUID(t), sourceWalletID,
+		mustMonitoringUUID(t), blockedWalletID)
 	mustMonitoringExec(t, ctx, tx, `
 		INSERT INTO wallet_balance_snapshot_runs (
 			id, asset_id, block_height, block_hash, block_time, wallet_count, total_balance
-		) VALUES ($1, $2, 100, $3, CURRENT_TIMESTAMP, 1, 0)
+		) VALUES ($1, $2, 100, $3, CURRENT_TIMESTAMP, 3, 12)
 	`, snapshotID, assetID, strings.Repeat("a", 64))
 	mustMonitoringExec(t, ctx, tx, `
 		INSERT INTO wallet_balance_snapshots (run_id, wallet_id, asset_id, balance)
-		VALUES ($1, $2, $3, 0)
-	`, snapshotID, walletID, assetID)
+		VALUES ($1, $2, $3, 0), ($1, $4, $3, 5), ($1, $5, $3, 7)
+	`, snapshotID, walletID, assetID, sourceWalletID, blockedWalletID)
+	mustMonitoringExec(t, ctx, tx, `
+		INSERT INTO sweep_screening_jobs (
+			id, asset_id, source_wallet_id, source_address,
+			destination_wallet_id, destination_address, snapshot_run_id,
+			snapshot_block_height, amount, status
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, 100, 5, 'pending')
+	`, pendingSweepScreeningID, assetID, sourceWalletID, "source-"+uniqueID,
+		walletID, "wallet-"+uniqueID, snapshotID)
+	mustMonitoringExec(t, ctx, tx, `
+		INSERT INTO sweep_screening_jobs (
+			id, asset_id, source_wallet_id, source_address,
+			destination_wallet_id, destination_address, snapshot_run_id,
+			snapshot_block_height, amount, status, lease_owner, lease_until,
+			lease_epoch, attempts
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, 100, 7, 'processing',
+		          'monitoring-test', CURRENT_TIMESTAMP + INTERVAL '1 minute', 1, 1)
+	`, blockedSweepScreeningID, assetID, blockedWalletID, "blocked-"+uniqueID,
+		walletID, "wallet-"+uniqueID, snapshotID)
+	mustMonitoringExec(t, ctx, tx, `
+		INSERT INTO sweep_screening_results (
+			id, job_id, attempt, provider, decision, reason_codes,
+			provider_reference, response_hash, checked_at, valid_until
+		) VALUES ($1, $2, 1, 'monitoring-test', 'deny', '["risk_match"]'::jsonb,
+		          $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '1 hour')
+	`, blockedSweepResultID, blockedSweepScreeningID, "provider-"+uniqueID, strings.Repeat("b", 64))
+	mustMonitoringExec(t, ctx, tx, `
+		UPDATE sweep_screening_jobs
+		SET status = 'completed', current_result_id = $2,
+		    lease_owner = NULL, lease_until = NULL, updated_at = clock_timestamp()
+		WHERE id = $1
+	`, blockedSweepScreeningID, blockedSweepResultID)
 	mustMonitoringExec(t, ctx, tx, `
 		INSERT INTO chain_scan_cursors (
 			network, start_height, anchor_hash, next_height, previous_hash
@@ -128,6 +171,13 @@ func TestStoreSnapshotAgainstMigratedDatabase(t *testing.T) {
 	}
 	if snapshot.LastWalletSnapshot[assetID] <= 0 {
 		t.Fatalf("LastWalletSnapshot[%q] = %v", assetID, snapshot.LastWalletSnapshot[assetID])
+	}
+	if snapshot.SweepScreeningJobs["pending"].Count < 1 ||
+		snapshot.SweepScreeningJobs["pending"].OldestCreatedUnixTime <= 0 {
+		t.Fatalf("SweepScreeningJobs[pending] = %+v", snapshot.SweepScreeningJobs["pending"])
+	}
+	if snapshot.SweepScreeningDecisions["deny"] < 1 {
+		t.Fatalf("SweepScreeningDecisions = %+v", snapshot.SweepScreeningDecisions)
 	}
 }
 

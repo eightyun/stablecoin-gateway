@@ -11,6 +11,7 @@ var (
 	reconciliationSeverity = []string{"warning", "critical"}
 	screeningJobStatuses   = []string{"pending", "processing"}
 	screeningDecisions     = []string{"deny", "review"}
+	sweepScreeningStates   = []string{"pending", "processing", "lease_expired", "result_expired"}
 )
 
 // CountAndOldest 表示某状态的数量和最早记录创建时间 Unix 秒。
@@ -38,6 +39,8 @@ type Snapshot struct {
 	ScreeningDecisions        map[string]int64
 	DepositScreeningJobs      map[string]CountAndOldest
 	DepositScreeningDecisions map[string]int64
+	SweepScreeningJobs        map[string]CountAndOldest
+	SweepScreeningDecisions   map[string]int64
 }
 
 // Source 读取一次业务风险快照。

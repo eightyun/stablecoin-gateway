@@ -53,6 +53,9 @@ func (store *Store) Snapshot(ctx context.Context) (Snapshot, error) {
 	if err := readDepositScreening(ctx, tx, snapshot.DepositScreeningJobs, snapshot.DepositScreeningDecisions); err != nil {
 		return Snapshot{}, err
 	}
+	if err := readSweepScreening(ctx, tx, snapshot.SweepScreeningJobs, snapshot.SweepScreeningDecisions); err != nil {
+		return Snapshot{}, err
+	}
 	if err := readCursors(ctx, tx, snapshot.IndexerCursors); err != nil {
 		return Snapshot{}, err
 	}
@@ -81,6 +84,8 @@ func emptySnapshot() Snapshot {
 		ScreeningDecisions:        make(map[string]int64, len(screeningDecisions)),
 		DepositScreeningJobs:      make(map[string]CountAndOldest, len(screeningJobStatuses)),
 		DepositScreeningDecisions: make(map[string]int64, len(screeningDecisions)),
+		SweepScreeningJobs:        make(map[string]CountAndOldest, len(sweepScreeningStates)),
+		SweepScreeningDecisions:   make(map[string]int64, len(screeningDecisions)),
 	}
 	for _, severity := range reconciliationSeverity {
 		snapshot.OpenReconciliationCases[severity] = 0
@@ -107,7 +112,103 @@ func emptySnapshot() Snapshot {
 	for _, status := range screeningJobStatuses {
 		snapshot.DepositScreeningJobs[status] = CountAndOldest{}
 	}
+	for _, state := range sweepScreeningStates {
+		snapshot.SweepScreeningJobs[state] = CountAndOldest{}
+	}
+	for _, decision := range screeningDecisions {
+		snapshot.SweepScreeningDecisions[decision] = 0
+	}
 	return snapshot
+}
+
+func readSweepScreening(
+	ctx context.Context,
+	tx pgx.Tx,
+	jobs map[string]CountAndOldest,
+	decisions map[string]int64,
+) error {
+	rows, err := tx.Query(ctx, `
+		SELECT state, COUNT(*), MIN(state_since)
+		FROM (
+		    SELECT
+		        CASE
+		            WHEN job.status = 'processing' AND job.lease_until <= CURRENT_TIMESTAMP
+		                THEN 'lease_expired'
+		            WHEN job.status = 'completed' AND result.valid_until <= CURRENT_TIMESTAMP
+		                THEN 'result_expired'
+		            ELSE job.status
+		        END AS state,
+		        EXTRACT(EPOCH FROM CASE
+		            WHEN job.status = 'processing' AND job.lease_until <= CURRENT_TIMESTAMP
+		                THEN job.lease_until
+		            WHEN job.status = 'completed' AND result.valid_until <= CURRENT_TIMESTAMP
+		                THEN result.valid_until
+		            ELSE job.updated_at
+		        END)::double precision AS state_since
+		    FROM sweep_screening_jobs AS job
+		    LEFT JOIN sweep_screening_results AS result ON result.id = job.current_result_id
+		    WHERE NOT EXISTS (
+		        SELECT 1
+		        FROM sweep_plans AS plan
+		        WHERE plan.source_wallet_id = job.source_wallet_id
+		          AND plan.snapshot_run_id = job.snapshot_run_id
+		    )
+		      AND (
+		          job.status IN ('pending', 'processing')
+		          OR (job.status = 'completed' AND result.valid_until <= CURRENT_TIMESTAMP)
+		      )
+		) AS active_jobs
+		GROUP BY state
+	`)
+	if err != nil {
+		return fmt.Errorf("查询归集筛查任务指标: %w", err)
+	}
+	for rows.Next() {
+		var state string
+		var value CountAndOldest
+		if err := rows.Scan(&state, &value.Count, &value.OldestCreatedUnixTime); err != nil {
+			rows.Close()
+			return fmt.Errorf("读取归集筛查任务指标: %w", err)
+		}
+		jobs[state] = value
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("遍历归集筛查任务指标: %w", err)
+	}
+	rows.Close()
+
+	rows, err = tx.Query(ctx, `
+		SELECT result.decision, COUNT(*)
+		FROM sweep_screening_jobs AS job
+		JOIN sweep_screening_results AS result ON result.id = job.current_result_id
+		WHERE NOT EXISTS (
+		    SELECT 1
+		    FROM sweep_plans AS plan
+		    WHERE plan.source_wallet_id = job.source_wallet_id
+		      AND plan.snapshot_run_id = job.snapshot_run_id
+		)
+		  AND job.status = 'completed'
+		  AND result.valid_until > CURRENT_TIMESTAMP
+		  AND result.decision IN ('deny', 'review')
+		GROUP BY result.decision
+	`)
+	if err != nil {
+		return fmt.Errorf("查询归集筛查决策指标: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var decision string
+		var count int64
+		if err := rows.Scan(&decision, &count); err != nil {
+			return fmt.Errorf("读取归集筛查决策指标: %w", err)
+		}
+		decisions[decision] = count
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历归集筛查决策指标: %w", err)
+	}
+	return nil
 }
 
 func readSweepExecutions(ctx context.Context, tx pgx.Tx, target map[string]CountAndOldest) error {

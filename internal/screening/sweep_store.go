@@ -19,6 +19,32 @@ var (
 	ErrSweepScreeningLeaseLost = errors.New("归集地址筛查租约已失效")
 )
 
+// SweepActionRequired 是尚未形成归集计划且需要运营关注的筛查任务。
+type SweepActionRequired struct {
+	JobID               string     `json:"job_id"`
+	AssetID             string     `json:"asset_id"`
+	SourceWalletID      string     `json:"source_wallet_id"`
+	SourceAddress       string     `json:"source_address"`
+	DestinationWalletID string     `json:"destination_wallet_id"`
+	DestinationAddress  string     `json:"destination_address"`
+	SnapshotRunID       string     `json:"snapshot_run_id"`
+	SnapshotBlockHeight int64      `json:"snapshot_block_height"`
+	Amount              string     `json:"amount"`
+	State               string     `json:"state"`
+	Attempts            int        `json:"attempts"`
+	LastError           string     `json:"last_error,omitempty"`
+	LeaseOwner          string     `json:"lease_owner,omitempty"`
+	LeaseUntil          *time.Time `json:"lease_until,omitempty"`
+	Decision            string     `json:"decision,omitempty"`
+	ReasonCodes         []string   `json:"reason_codes,omitempty"`
+	Provider            string     `json:"provider,omitempty"`
+	ProviderReference   string     `json:"provider_reference,omitempty"`
+	CheckedAt           *time.Time `json:"checked_at,omitempty"`
+	ValidUntil          *time.Time `json:"valid_until,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+}
+
 // SweepClaim 是绑定固化快照与精确金额的归集筛查租约。
 type SweepClaim struct {
 	JobID      string
@@ -38,6 +64,88 @@ func NewSweepStore(db *pgxpool.Pool) (*SweepStore, error) {
 		return nil, ErrDatabaseRequired
 	}
 	return &SweepStore{db: db}, nil
+}
+
+// ListSweepActionRequired 返回积压、租约失效、结果过期或被风险决策阻断的归集筛查任务。
+func (store *SweepStore) ListSweepActionRequired(ctx context.Context, limit int) ([]SweepActionRequired, error) {
+	if limit <= 0 || limit > 1000 {
+		return nil, ErrInvalidListLimit
+	}
+	rows, err := store.db.Query(ctx, `
+		SELECT job.id::TEXT, job.asset_id, job.source_wallet_id::TEXT, job.source_address,
+		       job.destination_wallet_id::TEXT, job.destination_address,
+		       job.snapshot_run_id::TEXT, job.snapshot_block_height, job.amount::TEXT,
+		       CASE
+		           WHEN job.status = 'processing' AND job.lease_until <= clock_timestamp()
+		               THEN 'lease_expired'
+		           WHEN job.status = 'completed' AND result.valid_until <= clock_timestamp()
+		               THEN 'result_expired'
+		           WHEN job.status = 'completed' AND result.decision IN ('deny', 'review')
+		               THEN 'blocked'
+		           ELSE job.status
+		       END,
+		       job.attempts, COALESCE(job.last_error, ''), COALESCE(job.lease_owner, ''),
+		       job.lease_until, COALESCE(result.decision, ''), result.reason_codes,
+		       COALESCE(result.provider, ''), COALESCE(result.provider_reference, ''),
+		       result.checked_at, result.valid_until, job.created_at, job.updated_at
+		FROM sweep_screening_jobs AS job
+		LEFT JOIN sweep_screening_results AS result ON result.id = job.current_result_id
+		WHERE NOT EXISTS (
+		    SELECT 1
+		    FROM sweep_plans AS plan
+		    WHERE plan.source_wallet_id = job.source_wallet_id
+		      AND plan.snapshot_run_id = job.snapshot_run_id
+		)
+		  AND (
+		      job.status IN ('pending', 'processing')
+		      OR (job.status = 'completed' AND result.valid_until <= clock_timestamp())
+		      OR (job.status = 'completed' AND result.valid_until > clock_timestamp()
+		          AND result.decision IN ('deny', 'review'))
+		  )
+		ORDER BY
+		    CASE
+		        WHEN job.status = 'completed' AND result.valid_until > clock_timestamp()
+		             AND result.decision = 'deny' THEN 0
+		        WHEN job.status = 'completed' AND result.valid_until > clock_timestamp()
+		             AND result.decision = 'review' THEN 1
+		        WHEN job.status = 'processing' AND job.lease_until <= clock_timestamp() THEN 2
+		        WHEN job.status = 'completed' AND result.valid_until <= clock_timestamp() THEN 3
+		        WHEN job.status = 'pending' THEN 4
+		        ELSE 5
+		    END,
+		    job.updated_at, job.id
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("查询待处置归集筛查任务: %w", err)
+	}
+	defer rows.Close()
+	actions := make([]SweepActionRequired, 0)
+	for rows.Next() {
+		var action SweepActionRequired
+		var reasonCodes []byte
+		if err := rows.Scan(
+			&action.JobID, &action.AssetID, &action.SourceWalletID, &action.SourceAddress,
+			&action.DestinationWalletID, &action.DestinationAddress,
+			&action.SnapshotRunID, &action.SnapshotBlockHeight, &action.Amount,
+			&action.State, &action.Attempts, &action.LastError, &action.LeaseOwner,
+			&action.LeaseUntil, &action.Decision, &reasonCodes, &action.Provider,
+			&action.ProviderReference, &action.CheckedAt, &action.ValidUntil,
+			&action.CreatedAt, &action.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("读取待处置归集筛查任务: %w", err)
+		}
+		if len(reasonCodes) > 0 {
+			if err := json.Unmarshal(reasonCodes, &action.ReasonCodes); err != nil {
+				return nil, fmt.Errorf("解析归集筛查原因码: %w", err)
+			}
+		}
+		actions = append(actions, action)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历待处置归集筛查任务: %w", err)
+	}
+	return actions, nil
 }
 
 // Claim 原子领取待处理、租约过期或结果过期的归集筛查任务。

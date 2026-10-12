@@ -33,6 +33,10 @@ func TestMetricsUpdateReplacesDynamicLabels(t *testing.T) {
 			"processing": {Count: 2, OldestCreatedUnixTime: 700},
 		},
 		DepositScreeningDecisions: map[string]int64{"review": 3},
+		SweepScreeningJobs: map[string]CountAndOldest{
+			"lease_expired": {Count: 1, OldestCreatedUnixTime: 800},
+		},
+		SweepScreeningDecisions: map[string]int64{"deny": 2},
 	})
 	assertGaugeValue(t, registry, "stablecoin_gateway_business_reconciliation_open_cases", map[string]string{"severity": "critical"}, 2)
 	assertGaugeValue(t, registry, "stablecoin_gateway_business_payouts", map[string]string{"status": "confirming"}, 3)
@@ -43,6 +47,8 @@ func TestMetricsUpdateReplacesDynamicLabels(t *testing.T) {
 	assertGaugeValue(t, registry, "stablecoin_gateway_business_payout_screening_decisions", map[string]string{"decision": "deny"}, 1)
 	assertGaugeValue(t, registry, "stablecoin_gateway_business_deposit_screening_jobs", map[string]string{"status": "processing"}, 2)
 	assertGaugeValue(t, registry, "stablecoin_gateway_business_deposit_screening_decisions", map[string]string{"decision": "review"}, 3)
+	assertGaugeValue(t, registry, "stablecoin_gateway_business_sweep_screening_jobs", map[string]string{"state": "lease_expired"}, 1)
+	assertGaugeValue(t, registry, "stablecoin_gateway_business_sweep_screening_decisions", map[string]string{"decision": "deny"}, 2)
 
 	metrics.Update(Snapshot{})
 	if hasLabels(t, registry, "stablecoin_gateway_business_indexer_next_height", map[string]string{"network": "tron-nile"}) {

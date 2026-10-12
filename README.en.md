@@ -250,7 +250,7 @@ export GATEWAY_MONITOR_REFRESH_INTERVAL='15s'
 go run ./cmd/gateway-monitor
 ```
 
-The process periodically captures a repeatable-read PostgreSQL snapshot. Prometheus scrapes in-memory gauges and therefore does not query the database at scrape frequency. Metrics cover open reconciliation cases, payout status and oldest creation time, inbound/outbound screening backlog and risk decisions, Outbox backlog and dead letters, indexer cursor activity, and the latest reconciliation and wallet-snapshot timestamps. They are observational only and never mutate ledger or business state.
+The process periodically captures a repeatable-read PostgreSQL snapshot. Prometheus scrapes in-memory gauges and therefore does not query the database at scrape frequency. Metrics cover open reconciliation cases, payout status and oldest creation time, inbound/outbound/pre-sweep screening backlog and risk decisions, expired sweep-screening leases and results, Outbox backlog and dead letters, indexer cursor activity, and the latest reconciliation and wallet-snapshot timestamps. They are observational only and never mutate ledger or business state.
 
 Load [`configs/prometheus/alerts.yml`](configs/prometheus/alerts.yml) into Prometheus. The process-down rule assumes the scrape job is named `stablecoin-gateway-monitor`. The payout, cursor, reconciliation, and wallet-snapshot thresholds are safe starting points and must be tuned to chain finality, scheduling frequency, and production SLAs. Cursor staleness currently detects stopped indexer activity; exact chain-head lag will follow with node-level monitoring.
 
@@ -274,7 +274,15 @@ The listing includes both pending-isolation and already quarantined `deny/review
 
 When upgrading, stop the old deposit matcher before applying migration 21, then start the new processes in inbound-screener → deposit-matcher order. An old binary does not contain this crediting gate.
 
-Inbound provider requests use `direction=inbound`, `deposit_screening_id`, `source_address`, and the platform `destination_address`. Outbound requests retain `direction=outbound`, `payout_id`, and `destination_address`. Both include network, asset, contract, and smallest-unit amount, and require provider-side idempotency through `Idempotency-Key`.
+Inbound provider requests use `direction=inbound` with `deposit_screening_id`; outbound requests use `direction=outbound` with `payout_id`; sweep requests use `direction=sweep` with `sweep_screening_id`. Inbound and sweep requests also include `source_address`. All three include destination, network, asset, contract, and smallest-unit amount, and require provider-side idempotency through `Idempotency-Key`.
+
+List sweep-screening tasks that have not produced a plan and require operator attention:
+
+```bash
+go run ./cmd/gateway-admin list-sweep-screenings --limit 100
+```
+
+The returned `state` is `pending`, `processing`, `lease_expired`, `result_expired`, or `blocked`. This read-only command provides no manual allow bypass; deny/review findings remain subject to the deployment's compliance process and cannot bypass the current-allow planning gate.
 
 Approve or reject a pending payout:
 

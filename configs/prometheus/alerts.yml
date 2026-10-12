@@ -136,6 +136,60 @@ groups:
           summary: 归集规划连续失败
           description: Sweep Planner 已连续至少 3 次无法完成安全归集规划，请检查快照、热钱包配置和数据库状态。
 
+      - alert: StablecoinGatewaySweepScreeningWorkerFailures
+        expr: stablecoin_gateway_worker_consecutive_failures{worker="sweep-screening"} >= 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 归集前地址筛查连续失败
+          description: Sweep Screening Worker 已连续至少 3 次无法完成当前风险筛查，新的归集计划会保持阻断。
+
+      - alert: StablecoinGatewaySweepScreeningBacklog
+        expr: stablecoin_gateway_business_sweep_screening_jobs{state=~"pending|processing"} > 0 and (time() - stablecoin_gateway_business_sweep_screening_oldest_state_timestamp_seconds{state=~"pending|processing"}) > 300
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 归集前地址筛查任务积压
+          description: 状态 {{ $labels.state }} 的最早归集筛查任务已等待超过 5 分钟。
+
+      - alert: StablecoinGatewaySweepScreeningLeaseExpired
+        expr: stablecoin_gateway_business_sweep_screening_jobs{state="lease_expired"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 归集筛查 Worker 租约失效
+          description: 当前有 {{ $value }} 个归集筛查任务租约已失效且尚未被其他 Worker 接管。
+
+      - alert: StablecoinGatewaySweepScreeningResultExpired
+        expr: stablecoin_gateway_business_sweep_screening_jobs{state="result_expired"} > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 归集筛查结果已过期
+          description: 当前有 {{ $value }} 个归集筛查结果已过期且尚未完成重新筛查。
+
+      - alert: StablecoinGatewaySweepScreeningDenied
+        expr: stablecoin_gateway_business_sweep_screening_decisions{decision="deny"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 归集来源地址被风险筛查拒绝
+          description: 当前有 {{ $value }} 个归集候选因 deny 决策被阻断，需要合规人员处置。
+
+      - alert: StablecoinGatewaySweepScreeningReviewRequired
+        expr: stablecoin_gateway_business_sweep_screening_decisions{decision="review"} > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 归集来源地址需要人工复核
+          description: 当前有 {{ $value }} 个归集候选因 review 决策被阻断。
+
       - alert: StablecoinGatewaySweepSigningFailures
         expr: stablecoin_gateway_worker_consecutive_failures{worker="sweep-signing"} >= 3
         for: 1m

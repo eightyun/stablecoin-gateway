@@ -101,3 +101,47 @@ func parseListDepositScreeningsOptions(args []string) (int, error) {
 	}
 	return *limit, nil
 }
+
+func runListSweepScreenings(ctx context.Context, args []string, output io.Writer) error {
+	limit, err := parseListSweepScreeningsOptions(args)
+	if err != nil {
+		return err
+	}
+	databaseURL := strings.TrimSpace(os.Getenv("GATEWAY_DATABASE_URL"))
+	if databaseURL == "" {
+		return errors.New("GATEWAY_DATABASE_URL 不能为空")
+	}
+	poolConfig := database.DefaultConfig(databaseURL, "gateway-admin")
+	poolConfig.MinConnections = 1
+	poolConfig.MaxConnections = 2
+	pool, err := database.Open(ctx, poolConfig)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	store, err := screening.NewSweepStore(pool)
+	if err != nil {
+		return err
+	}
+	results, err := store.ListSweepActionRequired(ctx, limit)
+	if err != nil {
+		return err
+	}
+	if err := json.NewEncoder(output).Encode(results); err != nil {
+		return fmt.Errorf("输出待处置归集筛查任务: %w", err)
+	}
+	return nil
+}
+
+func parseListSweepScreeningsOptions(args []string) (int, error) {
+	if len(args) == 0 || args[0] != "list-sweep-screenings" {
+		return 0, errUsage
+	}
+	flags := flag.NewFlagSet("list-sweep-screenings", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	limit := flags.Int("limit", 100, "maximum number of sweep screening tasks")
+	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || *limit <= 0 || *limit > 1000 {
+		return 0, errUsage
+	}
+	return *limit, nil
+}

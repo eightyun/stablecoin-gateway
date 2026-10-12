@@ -250,7 +250,7 @@ export GATEWAY_MONITOR_REFRESH_INTERVAL='15s'
 go run ./cmd/gateway-monitor
 ```
 
-该进程在 PostgreSQL 可重复读事务内周期采集快照，Prometheus 抓取只读取内存 Gauge，不会按抓取频率查询数据库。它暴露未关闭对账工单、出款状态与最早创建时间、入金/出款筛查积压和风险决策、Outbox 积压与死信、索引游标活动、最近对账和钱包快照时间。指标只用于监控，不会自动改账或改变业务状态。
+该进程在 PostgreSQL 可重复读事务内周期采集快照，Prometheus 抓取只读取内存 Gauge，不会按抓取频率查询数据库。它暴露未关闭对账工单、出款状态与最早创建时间、入金/出款/归集筛查积压和风险决策、归集筛查失效租约与过期结果、Outbox 积压与死信、索引游标活动、最近对账和钱包快照时间。指标只用于监控，不会自动改账或改变业务状态。
 
 可直接加载 [`configs/prometheus/alerts.yml`](configs/prometheus/alerts.yml)；其中进程存活规则约定 Prometheus job 名为 `stablecoin-gateway-monitor`。出款等待、索引停滞、日终对账和钱包快照阈值是安全起点，上线前必须按节点固化速度、任务调度频率和业务 SLA 调整。当前索引告警检测游标是否停止活动，精确的链头高度差将在接入节点级监控后补充。
 
@@ -274,7 +274,15 @@ go run ./cmd/gateway-admin list-deposit-screenings --limit 100
 
 从旧版本升级时必须先停止旧充值匹配 Worker，再执行迁移 21，并按“入金筛查 → 充值匹配”的顺序启动新进程；否则旧二进制不具备该入账闸门。
 
-入金 Provider 请求使用 `direction=inbound`、`deposit_screening_id`、`source_address` 和平台 `destination_address`；出款请求继续使用 `direction=outbound`、`payout_id` 和 `destination_address`。两种请求均发送网络、资产、合约和最小单位金额，并以 `Idempotency-Key` 保证供应商侧幂等。
+入金 Provider 请求使用 `direction=inbound` 和 `deposit_screening_id`；出款请求使用 `direction=outbound` 和 `payout_id`；归集请求使用 `direction=sweep` 和 `sweep_screening_id`。入金与归集请求同时发送 `source_address`，三种请求均发送目标地址、网络、资产、合约和最小单位金额，并以 `Idempotency-Key` 保证供应商侧幂等。
+
+查看尚未形成归集计划且需要运营关注的筛查任务：
+
+```bash
+go run ./cmd/gateway-admin list-sweep-screenings --limit 100
+```
+
+结果中的 `state` 为 `pending`、`processing`、`lease_expired`、`result_expired` 或 `blocked`。查询不会提供人工强制放行能力；`deny/review` 仍必须通过合规流程处置，不能绕过当前有效 `allow` 的计划闸门。
 
 审批或拒绝待审核出款：
 

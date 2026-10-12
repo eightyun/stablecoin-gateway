@@ -246,6 +246,7 @@ func TestStoreRequiresCurrentSweepScreeningBeforePlanning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertSweepScreeningAction(t, screeningStore, newSnapshotID, "pending", "")
 	firstClaim, err := screeningStore.Claim(ctx, "sweep-screening-1", 20*time.Millisecond)
 	if err != nil || firstClaim.Request.Direction != screening.DirectionSweep ||
 		firstClaim.Request.SourceAddress != sourceAddress || firstClaim.Request.DestinationAddress != hotAddress ||
@@ -253,6 +254,7 @@ func TestStoreRequiresCurrentSweepScreeningBeforePlanning(t *testing.T) {
 		t.Fatalf("Claim() = %+v, %v", firstClaim, err)
 	}
 	time.Sleep(30 * time.Millisecond)
+	assertSweepScreeningAction(t, screeningStore, newSnapshotID, "lease_expired", "")
 	secondClaim, err := screeningStore.Claim(ctx, "sweep-screening-2", time.Minute)
 	if err != nil || secondClaim.JobID != firstClaim.JobID || secondClaim.LeaseEpoch != 2 {
 		t.Fatalf("租约接管 Claim() = %+v, %v", secondClaim, err)
@@ -272,7 +274,9 @@ func TestStoreRequiresCurrentSweepScreeningBeforePlanning(t *testing.T) {
 	if _, err := store.PlanNext(ctx, policy); !errors.Is(err, ErrScreeningBlocked) {
 		t.Fatalf("deny 结果后 PlanNext() error = %v", err)
 	}
+	assertSweepScreeningAction(t, screeningStore, newSnapshotID, "blocked", screening.DecisionDeny)
 	time.Sleep(time.Until(denied.ValidUntil) + 20*time.Millisecond)
+	assertSweepScreeningAction(t, screeningStore, newSnapshotID, "result_expired", screening.DecisionDeny)
 	thirdClaim, err := screeningStore.Claim(ctx, "sweep-screening-3", time.Minute)
 	if err != nil || thirdClaim.LeaseEpoch != 3 {
 		t.Fatalf("结果过期 Claim() = %+v, %v", thirdClaim, err)
@@ -306,6 +310,29 @@ func TestStoreRequiresCurrentSweepScreeningBeforePlanning(t *testing.T) {
 	`, fourthClaim.JobID); err == nil || !strings.Contains(err.Error(), "results are immutable") {
 		t.Fatalf("修改归集筛查结果 error = %v", err)
 	}
+}
+
+func assertSweepScreeningAction(
+	t *testing.T,
+	store *screening.SweepStore,
+	snapshotRunID string,
+	state string,
+	decision string,
+) {
+	t.Helper()
+	actions, err := store.ListSweepActionRequired(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("ListSweepActionRequired() error = %v", err)
+	}
+	for _, action := range actions {
+		if action.SnapshotRunID == snapshotRunID {
+			if action.State != state || action.Decision != decision {
+				t.Fatalf("归集筛查运营状态 = %+v，期望 state=%q decision=%q", action, state, decision)
+			}
+			return
+		}
+	}
+	t.Fatalf("未找到快照 %s 的归集筛查运营任务: %+v", snapshotRunID, actions)
 }
 
 func TestStoreRejectsScreeningEvidenceExpiredAtMatch(t *testing.T) {
