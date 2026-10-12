@@ -28,6 +28,7 @@ var (
 	ErrDatabaseRequired = errors.New("数据库连接不能为空")
 	ErrRunInProgress    = errors.New("已有对账任务正在执行")
 	ErrInvalidAsset     = errors.New("对账资产无效")
+	ErrSnapshotMissing  = errors.New("指定资产缺少可用的固化钱包快照")
 	ErrInvalidList      = errors.New("对账工单查询请求无效")
 	ErrInvalidResolve   = errors.New("对账工单关闭请求无效")
 	ErrCaseNotOpen      = errors.New("对账工单不存在或已关闭")
@@ -37,6 +38,7 @@ var (
 type RunResult struct {
 	RunID        string    `json:"run_id"`
 	Kind         string    `json:"kind"`
+	AssetID      string    `json:"asset_id,omitempty"`
 	SnapshotAt   time.Time `json:"snapshot_at"`
 	CheckedItems int64     `json:"checked_items"`
 	FindingCount int       `json:"finding_count"`
@@ -88,7 +90,7 @@ func NewStore(db *pgxpool.Pool) (*Store, error) {
 
 // RunLedgerIntegrity 在同一可重复读快照中检测账务及业务引用差异。
 func (store *Store) RunLedgerIntegrity(ctx context.Context) (result RunResult, err error) {
-	return store.run(ctx, RunKindLedgerIntegrity, []detector{
+	return store.run(ctx, RunKindLedgerIntegrity, "", []detector{
 		detectUnbalancedTransactions,
 		detectDepositLedgerMismatches,
 		detectDepositLedgerSemanticMismatches,
@@ -99,7 +101,7 @@ func (store *Store) RunLedgerIntegrity(ctx context.Context) (result RunResult, e
 
 // RunWalletAssets 比较同一快照内的链上托管余额与账本托管余额。
 func (store *Store) RunWalletAssets(ctx context.Context) (result RunResult, err error) {
-	return store.run(ctx, RunKindWalletAssets, []detector{detectWalletCustodyBalanceMismatches})
+	return store.run(ctx, RunKindWalletAssets, "", []detector{detectWalletCustodyBalanceMismatches})
 }
 
 // RunWalletAsset 只比较指定资产的链上托管余额与账本托管余额。
@@ -108,10 +110,15 @@ func (store *Store) RunWalletAsset(ctx context.Context, assetID string) (result 
 	if assetID == "" || len(assetID) > 128 {
 		return RunResult{}, ErrInvalidAsset
 	}
-	return store.run(ctx, RunKindWalletAssets, []detector{walletCustodyBalanceDetector(assetID)})
+	return store.run(ctx, RunKindWalletAssets, assetID, []detector{walletCustodyBalanceDetector(assetID)})
 }
 
-func (store *Store) run(ctx context.Context, kind string, detectors []detector) (result RunResult, err error) {
+func (store *Store) run(
+	ctx context.Context,
+	kind string,
+	assetID string,
+	detectors []detector,
+) (result RunResult, err error) {
 	transaction, err := store.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return RunResult{}, fmt.Errorf("开始对账事务: %w", err)
@@ -130,6 +137,7 @@ func (store *Store) run(ctx context.Context, kind string, detectors []detector) 
 	}
 
 	result.Kind = kind
+	result.AssetID = assetID
 	if err = transaction.QueryRow(ctx, `SELECT CURRENT_TIMESTAMP`).Scan(&result.SnapshotAt); err != nil {
 		return RunResult{}, fmt.Errorf("读取对账快照时间: %w", err)
 	}
@@ -150,12 +158,16 @@ func (store *Store) run(ctx context.Context, kind string, detectors []detector) 
 		findings = append(findings, detected...)
 	}
 	result.FindingCount = len(findings)
+	if result.AssetID != "" && result.CheckedItems == 0 {
+		return RunResult{}, ErrSnapshotMissing
+	}
 
 	if _, err = transaction.Exec(ctx, `
 		INSERT INTO reconciliation_runs (
-			id, kind, snapshot_at, checked_items, finding_count
-		) VALUES ($1, $2, $3, $4, $5)
-	`, result.RunID, result.Kind, result.SnapshotAt, result.CheckedItems, result.FindingCount); err != nil {
+			id, kind, asset_id, snapshot_at, checked_items, finding_count
+		) VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6)
+	`, result.RunID, result.Kind, result.AssetID, result.SnapshotAt,
+		result.CheckedItems, result.FindingCount); err != nil {
 		return RunResult{}, fmt.Errorf("记录对账运行: %w", err)
 	}
 	for _, detected := range findings {

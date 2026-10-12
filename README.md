@@ -164,6 +164,15 @@ go run ./cmd/gateway-reconcile
 go run ./cmd/gateway-admin list-reconciliation-cases --limit 100
 ```
 
+如果只需对指定资产的钱包快照做定向验收，可限定钱包资产对账范围；账本完整性检查仍保持全局：
+
+```bash
+export GATEWAY_RECONCILIATION_WALLET_ASSET_ID='usdt-tron-nile'
+go run ./cmd/gateway-reconcile
+```
+
+定向对账会把资产范围保存到不可变的运行记录中；指定资产没有固化钱包快照时安全失败，不会把“检查 0 项”当成成功。定向运行不会刷新“全局钱包对账”的新鲜度指标。
+
 钱包资产对账使用保守区间：下界为已固化托管钱包余额，上界为下界加广播结果尚不确定的出款金额。账本托管资产高于上界视为短款，低于下界视为长款；归集是托管钱包内部转移，只记录在途证据，不重复计入资产。对账只发现差异，不会自动修改账本或业务状态。完成核实和人工处置后，通过带审计信息的命令关闭工单：
 
 ```bash
@@ -371,7 +380,7 @@ export GATEWAY_TRON_API_KEY='从密钥管理服务注入'
 go run ./cmd/gateway-payout-execution-worker
 ```
 
-上述配置已具备测试网签名、广播和确认链路。2026-09-27 已使用全新 Nile 专用钱包完成真实测试资产验收：[`e7f6ee9…aef39`](https://nile.tronscan.org/#/transaction/e7f6ee9ba5f10f119454d8df0a33b633ca6915a31f2847b82a1d5d25859aef39) 验证 signer 构造、签名、广播和 SolidityNode 固化确认；[`fa242e1b…cc82b`](https://nile.tronscan.org/#/transaction/fa242e1bdc988f926582b169944ddf6eeb64cac55c7e83e79d38e371385cc82b) 验证 Indexer 捕获真实 Transfer、Deposit Worker 匹配充值意图、双分录入账并生成 `deposit.confirmed` Outbox；[`86283b5f…e9ac`](https://nile.tronscan.org/#/transaction/86283b5fb90fc9aaf01162aff936df9c2c2b5ad7a89856ee972d691e87f0e9ac) 验证商户 API 创建出款、原子冻资、人工审批、私有 CA Signer、广播、固化确认和账本结算。2026-10-12 又通过 [`6fd465a…073da648`](https://nile.tronscan.org/#/transaction/6fd465a762b3d48bd01f5a4c18e6b83322bece9b9045d5072d481aef073da648) 完成了 1,000 USDT 从专用充值地址到热钱包的真实归集，并验证了归集前后固化快照与账本托管余额一致。同轮还验证了交易安全过期且未上链时自动失败并原子解冻。以上只是功能性实测，不等同于生产验收；生产环境仍应为节点端点配置独立容灾与监控。
+上述配置已具备测试网签名、广播和确认链路。2026-09-27 已使用全新 Nile 专用钱包完成真实测试资产验收：[`e7f6ee9…aef39`](https://nile.tronscan.org/#/transaction/e7f6ee9ba5f10f119454d8df0a33b633ca6915a31f2847b82a1d5d25859aef39) 验证 signer 构造、签名、广播和 SolidityNode 固化确认；[`fa242e1b…cc82b`](https://nile.tronscan.org/#/transaction/fa242e1bdc988f926582b169944ddf6eeb64cac55c7e83e79d38e371385cc82b) 验证 Indexer 捕获真实 Transfer、Deposit Worker 匹配充值意图、双分录入账并生成 `deposit.confirmed` Outbox；[`86283b5f…e9ac`](https://nile.tronscan.org/#/transaction/86283b5fb90fc9aaf01162aff936df9c2c2b5ad7a89856ee972d691e87f0e9ac) 验证商户 API 创建出款、原子冻资、人工审批、私有 CA Signer、广播、固化确认和账本结算。2026-10-12 又通过 [`6fd465a…073da648`](https://nile.tronscan.org/#/transaction/6fd465a762b3d48bd01f5a4c18e6b83322bece9b9045d5072d481aef073da648) 完成了 1,000 USDT 从专用充值地址到热钱包的真实归集，并验证了归集前后固化快照与账本托管余额一致。归集后的外部 `0.000001 USDT` 尘埃转账也已被定向对账识别为链上长款工单，未自动计入商户账本。同轮还验证了交易安全过期且未上链时自动失败并原子解冻。以上只是功能性实测，不等同于生产验收；生产环境仍应为节点端点配置独立容灾与监控。
 
 在配置钱包和远程签名器前，先执行不持有私钥、不写链的 Nile 预检：
 

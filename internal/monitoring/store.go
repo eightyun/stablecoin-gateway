@@ -363,6 +363,7 @@ func readReconciliationRuns(ctx context.Context, tx pgx.Tx, target map[string]fl
 	rows, err := tx.Query(ctx, `
 		SELECT kind, EXTRACT(EPOCH FROM MAX(snapshot_at))::double precision
 		FROM reconciliation_runs
+		WHERE asset_id IS NULL
 		GROUP BY kind
 	`)
 	if err != nil {

@@ -164,6 +164,15 @@ go run ./cmd/gateway-reconcile
 go run ./cmd/gateway-admin list-reconciliation-cases --limit 100
 ```
 
+For targeted acceptance of one asset's wallet snapshots, scope only the wallet-asset reconciliation; ledger-integrity checks remain global:
+
+```bash
+export GATEWAY_RECONCILIATION_WALLET_ASSET_ID='usdt-tron-nile'
+go run ./cmd/gateway-reconcile
+```
+
+The immutable reconciliation run records the selected asset scope. A scoped run fails safely when that asset has no finalized wallet snapshot; it never treats "checked zero items" as a successful reconciliation, and it does not refresh the global wallet-reconciliation freshness metric.
+
 Wallet-asset reconciliation uses a conservative interval. Its lower bound is the finalized custody-wallet balance; its upper bound adds payouts whose broadcast outcome remains uncertain. Ledger custody above the upper bound is a shortfall, while custody below the lower bound is an excess. Sweeps move funds between custody wallets, so they are recorded as in-flight evidence without being counted twice. Reconciliation only detects discrepancies; it never changes ledger or business state automatically. After verification and manual remediation, resolve the case with audited operator details:
 
 ```bash
@@ -371,7 +380,7 @@ export GATEWAY_TRON_API_KEY='injected-by-your-secrets-manager'
 go run ./cmd/gateway-payout-execution-worker
 ```
 
-This configuration provides the testnet signing, broadcast, and confirmation path. On 2026-09-27, a fresh Nile-only wallet completed live test-asset checks: [`e7f6ee9…aef39`](https://nile.tronscan.org/#/transaction/e7f6ee9ba5f10f119454d8df0a33b633ca6915a31f2847b82a1d5d25859aef39) covered signer construction, signing, broadcast, and SolidityNode finalization; [`fa242e1b…cc82b`](https://nile.tronscan.org/#/transaction/fa242e1bdc988f926582b169944ddf6eeb64cac55c7e83e79d38e371385cc82b) covered Indexer ingestion of a real Transfer, Deposit Worker intent matching, double-entry posting, and creation of the `deposit.confirmed` Outbox event; and [`86283b5f…e9ac`](https://nile.tronscan.org/#/transaction/86283b5fb90fc9aaf01162aff936df9c2c2b5ad7a89856ee972d691e87f0e9ac) covered merchant API payout creation, atomic freezing, manual approval, a private-CA signer, broadcast, finalization, and ledger settlement. On 2026-10-12, [`6fd465a…073da648`](https://nile.tronscan.org/#/transaction/6fd465a762b3d48bd01f5a4c18e6b83322bece9b9045d5072d481aef073da648) completed a live 1,000 USDT sweep from a dedicated deposit address to the hot wallet, with finalized before-and-after snapshots matching the custody ledger. The same test cycle also verified automatic failure and atomic fund release when a transaction safely expired without reaching the chain. This is functional testnet evidence rather than production acceptance; production deployments still need independent node failover and monitoring.
+This configuration provides the testnet signing, broadcast, and confirmation path. On 2026-09-27, a fresh Nile-only wallet completed live test-asset checks: [`e7f6ee9…aef39`](https://nile.tronscan.org/#/transaction/e7f6ee9ba5f10f119454d8df0a33b633ca6915a31f2847b82a1d5d25859aef39) covered signer construction, signing, broadcast, and SolidityNode finalization; [`fa242e1b…cc82b`](https://nile.tronscan.org/#/transaction/fa242e1bdc988f926582b169944ddf6eeb64cac55c7e83e79d38e371385cc82b) covered Indexer ingestion of a real Transfer, Deposit Worker intent matching, double-entry posting, and creation of the `deposit.confirmed` Outbox event; and [`86283b5f…e9ac`](https://nile.tronscan.org/#/transaction/86283b5fb90fc9aaf01162aff936df9c2c2b5ad7a89856ee972d691e87f0e9ac) covered merchant API payout creation, atomic freezing, manual approval, a private-CA signer, broadcast, finalization, and ledger settlement. On 2026-10-12, [`6fd465a…073da648`](https://nile.tronscan.org/#/transaction/6fd465a762b3d48bd01f5a4c18e6b83322bece9b9045d5072d481aef073da648) completed a live 1,000 USDT sweep from a dedicated deposit address to the hot wallet, with finalized before-and-after snapshots matching the custody ledger. A later external `0.000001 USDT` dust transfer was identified by scoped reconciliation as an on-chain excess case and was not credited to any merchant ledger. The same test cycle also verified automatic failure and atomic fund release when a transaction safely expired without reaching the chain. This is functional testnet evidence rather than production acceptance; production deployments still need independent node failover and monitoring.
 
 Before configuring a wallet and remote signer, run the read-only Nile preflight, which holds no private key and writes nothing on-chain:
 

@@ -38,9 +38,15 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	walletReconciliation := store.RunWalletAssets
+	if cfg.WalletAssetID != "" {
+		walletReconciliation = func(ctx context.Context) (reconciliation.RunResult, error) {
+			return store.RunWalletAsset(ctx, cfg.WalletAssetID)
+		}
+	}
 	runs := []func(context.Context) (reconciliation.RunResult, error){
 		store.RunLedgerIntegrity,
-		store.RunWalletAssets,
+		walletReconciliation,
 	}
 	for _, runReconciliation := range runs {
 		result, runErr := runReconciliation(ctx)
@@ -60,6 +66,7 @@ func logResult(result reconciliation.RunResult) {
 	log("对账任务完成",
 		"run_id", result.RunID,
 		"kind", result.Kind,
+		"asset_id", result.AssetID,
 		"checked_items", result.CheckedItems,
 		"finding_count", result.FindingCount,
 	)

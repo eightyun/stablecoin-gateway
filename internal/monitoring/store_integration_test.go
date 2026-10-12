@@ -33,6 +33,8 @@ func TestStoreSnapshotAgainstMigratedDatabase(t *testing.T) {
 	walletID := mustMonitoringUUID(t)
 	snapshotID := mustMonitoringUUID(t)
 	reconciliationRunID := mustMonitoringUUID(t)
+	globalWalletRunID := mustMonitoringUUID(t)
+	scopedWalletRunID := mustMonitoringUUID(t)
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("开始准备测试数据事务: %v", err)
@@ -71,9 +73,12 @@ func TestStoreSnapshotAgainstMigratedDatabase(t *testing.T) {
 	`, mustMonitoringUUID(t), uniqueID)
 	mustMonitoringExec(t, ctx, tx, `
 		INSERT INTO reconciliation_runs (
-			id, kind, snapshot_at, checked_items, finding_count
-		) VALUES ($1, 'ledger_integrity', CURRENT_TIMESTAMP, 1, 0)
-	`, reconciliationRunID)
+			id, kind, asset_id, snapshot_at, checked_items, finding_count
+		) VALUES
+			($1, 'ledger_integrity', NULL, CURRENT_TIMESTAMP, 1, 0),
+			($2, 'wallet_assets', NULL, CURRENT_TIMESTAMP - INTERVAL '1 hour', 1, 0),
+			($3, 'wallet_assets', $4, CURRENT_TIMESTAMP, 1, 0)
+	`, reconciliationRunID, globalWalletRunID, scopedWalletRunID, assetID)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("提交测试数据: %v", err)
 	}
@@ -108,6 +113,18 @@ func TestStoreSnapshotAgainstMigratedDatabase(t *testing.T) {
 	}
 	if snapshot.LastReconciliationRun["ledger_integrity"] <= 0 {
 		t.Fatalf("LastReconciliationRun = %+v", snapshot.LastReconciliationRun)
+	}
+	var expectedGlobalWalletRun float64
+	if err := pool.QueryRow(ctx, `
+		SELECT EXTRACT(EPOCH FROM MAX(snapshot_at))::double precision
+		FROM reconciliation_runs
+		WHERE kind = 'wallet_assets' AND asset_id IS NULL
+	`).Scan(&expectedGlobalWalletRun); err != nil {
+		t.Fatalf("读取全局钱包对账时间: %v", err)
+	}
+	if snapshot.LastReconciliationRun["wallet_assets"] != expectedGlobalWalletRun {
+		t.Fatalf("定向对账误刷新全局时间 LastReconciliationRun=%+v want=%v",
+			snapshot.LastReconciliationRun, expectedGlobalWalletRun)
 	}
 	if snapshot.LastWalletSnapshot[assetID] <= 0 {
 		t.Fatalf("LastWalletSnapshot[%q] = %v", assetID, snapshot.LastWalletSnapshot[assetID])

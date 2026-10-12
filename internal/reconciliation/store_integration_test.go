@@ -246,9 +246,11 @@ func TestStoreReconcilesWalletAndLedgerCheckpoint(t *testing.T) {
 	baseTime := time.Now().UTC().Add(-3 * time.Minute)
 	insertSnapshot(90, 0, 20, baseTime)
 	shortfallRun, err := store.RunWalletAssets(ctx)
-	if err != nil || shortfallRun.Kind != RunKindWalletAssets || shortfallRun.CheckedItems < 1 || shortfallRun.FindingCount < 1 {
+	if err != nil || shortfallRun.Kind != RunKindWalletAssets || shortfallRun.AssetID != "" ||
+		shortfallRun.CheckedItems < 1 || shortfallRun.FindingCount < 1 {
 		t.Fatalf("短款 RunWalletAssets() = %+v, %v", shortfallRun, err)
 	}
+	assertRunAssetScope(t, pool, shortfallRun.RunID, "")
 	assertWalletCase(t, pool, shortfallRun.RunID, assetID,
 		ruleWalletCustodyBalanceShortfall, SeverityCritical, `"difference": "-10"`)
 	assertWalletCase(t, pool, shortfallRun.RunID, assetID,
@@ -330,15 +332,33 @@ func TestStoreReconcilesWalletAndLedgerCheckpoint(t *testing.T) {
 	}
 
 	targetRun, err := store.RunWalletAsset(ctx, assetID)
-	if err != nil || targetRun.CheckedItems != 1 || targetRun.FindingCount != 0 {
+	if err != nil || targetRun.AssetID != assetID || targetRun.CheckedItems != 1 || targetRun.FindingCount != 0 {
 		t.Fatalf("目标资产 RunWalletAsset() = %+v, %v", targetRun, err)
 	}
+	assertRunAssetScope(t, pool, targetRun.RunID, assetID)
 	unrelatedRun, err := store.RunWalletAsset(ctx, unrelatedAssetID)
-	if err != nil || unrelatedRun.CheckedItems != 1 || unrelatedRun.FindingCount != 1 {
+	if err != nil || unrelatedRun.AssetID != unrelatedAssetID ||
+		unrelatedRun.CheckedItems != 1 || unrelatedRun.FindingCount != 1 {
 		t.Fatalf("无关差异资产 RunWalletAsset() = %+v, %v", unrelatedRun, err)
 	}
+	assertRunAssetScope(t, pool, unrelatedRun.RunID, unrelatedAssetID)
 	assertWalletCase(t, pool, unrelatedRun.RunID, unrelatedAssetID,
 		ruleWalletCustodyBalanceShortfall, SeverityCritical, `"difference": "-100"`)
+	if _, err := store.RunWalletAsset(ctx, "missing-"+reconciliationUUID(t)); !errors.Is(err, ErrSnapshotMissing) {
+		t.Fatalf("无快照资产 RunWalletAsset() error = %v", err)
+	}
+}
+
+func assertRunAssetScope(t *testing.T, pool *pgxpool.Pool, runID, expectedAssetID string) {
+	t.Helper()
+	var assetID string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT COALESCE(asset_id, '')
+		FROM reconciliation_runs
+		WHERE id = $1
+	`, runID).Scan(&assetID); err != nil || assetID != expectedAssetID {
+		t.Fatalf("对账运行资产范围 asset_id=%q want=%q error=%v", assetID, expectedAssetID, err)
+	}
 }
 
 func assertWalletCase(
