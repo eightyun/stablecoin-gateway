@@ -17,6 +17,7 @@ import (
 	"github.com/eightyun/stablecoin-gateway/internal/chain/tron"
 	"github.com/eightyun/stablecoin-gateway/internal/database"
 	"github.com/eightyun/stablecoin-gateway/internal/identity"
+	"github.com/eightyun/stablecoin-gateway/internal/screening"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -199,6 +200,114 @@ func TestStoreAcceptsScreeningEvidenceThatWasValidAtMatch(t *testing.T) {
 	}
 }
 
+func TestStoreRequiresCurrentSweepScreeningBeforePlanning(t *testing.T) {
+	store, pool, policy := newSweepFixture(t, "allow", "100", time.Hour)
+	ctx := context.Background()
+	var sourceWalletID, hotWalletID, sourceAddress, hotAddress, custodyAccountID string
+	if err := pool.QueryRow(ctx, `
+		SELECT source.id::TEXT, hot.id::TEXT, source.address, hot.address,
+		       account.id::TEXT
+		FROM custody_wallets AS source
+		JOIN custody_wallets AS hot
+		  ON hot.asset_id = source.asset_id AND hot.role = 'hot'
+		JOIN ledger_accounts AS account
+		  ON account.asset_id = source.asset_id AND account.owner_type = 'platform'
+		 AND account.owner_id = 'gateway' AND account.code = 'custody'
+		WHERE source.asset_id = $1 AND source.role = 'deposit'
+	`, policy.AssetID).Scan(
+		&sourceWalletID, &hotWalletID, &sourceAddress, &hotAddress, &custodyAccountID,
+	); err != nil {
+		t.Fatalf("查询归集筛查测试资源: %v", err)
+	}
+	newSnapshotID := sweepUUID(t)
+	mustSweepExec(t, pool, `
+		INSERT INTO wallet_balance_snapshot_runs (
+			id, asset_id, block_height, block_hash, block_time, wallet_count,
+			total_balance, ledger_account_id, ledger_entry_count, ledger_balance
+		) VALUES ($1, $2, 11, $3, CURRENT_TIMESTAMP, 2, 100, $4, 0, 0)
+	`, newSnapshotID, policy.AssetID, strings.Repeat("d", 64), custodyAccountID)
+	mustSweepExec(t, pool, `
+		INSERT INTO wallet_balance_snapshots (run_id, wallet_id, asset_id, balance)
+		VALUES ($1, $2, $3, 100), ($1, $4, $3, 0)
+	`, newSnapshotID, sourceWalletID, policy.AssetID, hotWalletID)
+
+	if _, err := store.PlanNext(ctx, policy); !errors.Is(err, ErrScreeningPending) {
+		t.Fatalf("未筛查 PlanNext() error = %v", err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `
+		SELECT status
+		FROM sweep_screening_jobs
+		WHERE source_wallet_id = $1 AND snapshot_run_id = $2
+	`, sourceWalletID, newSnapshotID).Scan(&status); err != nil || status != "pending" {
+		t.Fatalf("归集筛查任务 status=%q error=%v", status, err)
+	}
+	screeningStore, err := screening.NewSweepStore(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstClaim, err := screeningStore.Claim(ctx, "sweep-screening-1", 20*time.Millisecond)
+	if err != nil || firstClaim.Request.Direction != screening.DirectionSweep ||
+		firstClaim.Request.SourceAddress != sourceAddress || firstClaim.Request.DestinationAddress != hotAddress ||
+		firstClaim.Request.Amount != "100" {
+		t.Fatalf("Claim() = %+v, %v", firstClaim, err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	secondClaim, err := screeningStore.Claim(ctx, "sweep-screening-2", time.Minute)
+	if err != nil || secondClaim.JobID != firstClaim.JobID || secondClaim.LeaseEpoch != 2 {
+		t.Fatalf("租约接管 Claim() = %+v, %v", secondClaim, err)
+	}
+	now := time.Now().UTC()
+	denied := screening.Result{
+		Provider: "sweep-test", Decision: screening.DecisionDeny,
+		ReasonCodes: []string{"risk_match"}, ProviderReference: "sweep-deny",
+		ResponseHash: strings.Repeat("e", 64), CheckedAt: now, ValidUntil: now.Add(20 * time.Millisecond),
+	}
+	if err := screeningStore.Complete(ctx, firstClaim, denied); !errors.Is(err, screening.ErrSweepScreeningLeaseLost) {
+		t.Fatalf("旧租约 Complete() error = %v", err)
+	}
+	if err := screeningStore.Complete(ctx, secondClaim, denied); err != nil {
+		t.Fatalf("deny Complete() error = %v", err)
+	}
+	if _, err := store.PlanNext(ctx, policy); !errors.Is(err, ErrScreeningBlocked) {
+		t.Fatalf("deny 结果后 PlanNext() error = %v", err)
+	}
+	time.Sleep(time.Until(denied.ValidUntil) + 20*time.Millisecond)
+	thirdClaim, err := screeningStore.Claim(ctx, "sweep-screening-3", time.Minute)
+	if err != nil || thirdClaim.LeaseEpoch != 3 {
+		t.Fatalf("结果过期 Claim() = %+v, %v", thirdClaim, err)
+	}
+	if err := screeningStore.Release(ctx, thirdClaim, "provider_error"); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+	fourthClaim, err := screeningStore.Claim(ctx, "sweep-screening-4", time.Minute)
+	if err != nil || fourthClaim.LeaseEpoch != 4 {
+		t.Fatalf("释放后 Claim() = %+v, %v", fourthClaim, err)
+	}
+	now = time.Now().UTC()
+	if err := screeningStore.Complete(ctx, fourthClaim, screening.Result{
+		Provider: "sweep-test", Decision: screening.DecisionAllow,
+		ReasonCodes: []string{"low_risk"}, ProviderReference: "sweep-allow",
+		ResponseHash: strings.Repeat("f", 64), CheckedAt: now, ValidUntil: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	plan, err := store.PlanNext(ctx, policy)
+	if err != nil || plan.SnapshotRunID != newSnapshotID || plan.Amount != "100" {
+		t.Fatalf("筛查允许后 PlanNext() = %+v, %v", plan, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE sweep_screening_jobs SET amount = 99 WHERE id = $1
+	`, fourthClaim.JobID); err == nil || !strings.Contains(err.Error(), "identity is immutable") {
+		t.Fatalf("修改归集筛查任务 error = %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE sweep_screening_results SET decision = 'deny' WHERE job_id = $1
+	`, fourthClaim.JobID); err == nil || !strings.Contains(err.Error(), "results are immutable") {
+		t.Fatalf("修改归集筛查结果 error = %v", err)
+	}
+}
+
 func TestStoreRejectsScreeningEvidenceExpiredAtMatch(t *testing.T) {
 	store, _, policy := newSweepFixture(t, "allow", "100", -30*time.Second)
 	if _, err := store.PlanNext(context.Background(), policy); !errors.Is(err, ErrNoCandidate) {
@@ -367,6 +476,34 @@ func newSweepFixture(t *testing.T, decision, snapshotBalance string, screeningVa
 		INSERT INTO wallet_balance_snapshots (run_id, wallet_id, asset_id, balance)
 		VALUES ($1, $2, $3, $4), ($1, $5, $3, 0)
 	`, runID, addressID, assetID, snapshotBalance, hotWalletID)
+	if snapshotBalance == "100" && decision == "allow" && screeningValidity > 0 {
+		sweepScreeningJobID := sweepUUID(t)
+		sweepScreeningResultID := sweepUUID(t)
+		mustSweepExec(t, pool, `
+			INSERT INTO sweep_screening_jobs (
+				id, asset_id, source_wallet_id, source_address,
+				destination_wallet_id, destination_address, snapshot_run_id,
+				snapshot_block_height, amount, status, lease_owner,
+				lease_until, lease_epoch, attempts
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, 10, 100,
+			          'processing', 'sweep-test', CURRENT_TIMESTAMP + INTERVAL '1 minute', 1, 1)
+		`, sweepScreeningJobID, assetID, addressID, destinationAddress,
+			hotWalletID, hotAddress, runID)
+		mustSweepExec(t, pool, `
+			INSERT INTO sweep_screening_results (
+				id, job_id, attempt, provider, decision, reason_codes,
+				provider_reference, response_hash, checked_at, valid_until
+			) VALUES ($1, $2, 1, 'sweep-test', 'allow', '[]'::jsonb,
+			          $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '1 hour')
+		`, sweepScreeningResultID, sweepScreeningJobID,
+			"sweep-screening-"+unique, strings.Repeat("e", 64))
+		mustSweepExec(t, pool, `
+			UPDATE sweep_screening_jobs
+			SET status = 'completed', current_result_id = $2,
+			    lease_owner = NULL, lease_until = NULL, updated_at = clock_timestamp()
+			WHERE id = $1
+		`, sweepScreeningJobID, sweepScreeningResultID)
+	}
 	store, err := NewStore(pool)
 	if err != nil {
 		t.Fatal(err)

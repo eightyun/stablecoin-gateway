@@ -128,3 +128,20 @@ func LoadDepositScreeningWorker() (PayoutScreeningWorkerConfig, error) {
 	config.WorkerID = workerID
 	return config, nil
 }
+
+// LoadSweepScreeningWorker 加载归集地址筛查 Worker 配置，并复用同一个 Provider 契约。
+func LoadSweepScreeningWorker() (PayoutScreeningWorkerConfig, error) {
+	config, err := LoadPayoutScreeningWorker()
+	if err != nil {
+		return PayoutScreeningWorkerConfig{}, err
+	}
+	workerID := strings.TrimSpace(os.Getenv("GATEWAY_SWEEP_SCREENING_WORKER_ID"))
+	if workerID == "" {
+		workerID = defaultWorkerID()
+	}
+	if len(workerID) > 128 {
+		return PayoutScreeningWorkerConfig{}, fmt.Errorf("GATEWAY_SWEEP_SCREENING_WORKER_ID 不能超过 128 字符")
+	}
+	config.WorkerID = workerID
+	return config, nil
+}

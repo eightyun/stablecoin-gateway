@@ -36,7 +36,7 @@ func NewWorker(planner Planner, policy Policy, logger *slog.Logger, config Worke
 	}
 	operation := background.OperationFunc(func(ctx context.Context) (bool, error) {
 		plan, err := planner.PlanNext(ctx, policy)
-		if errors.Is(err, ErrNoCandidate) {
+		if errors.Is(err, ErrNoCandidate) || errors.Is(err, ErrScreeningPending) || errors.Is(err, ErrScreeningBlocked) {
 			return false, nil
 		}
 		if err != nil {

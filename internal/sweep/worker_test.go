@@ -38,6 +38,23 @@ func TestNewWorkerRejectsInvalidPolicy(t *testing.T) {
 	}
 }
 
+func TestWorkerIdlesWhileSweepScreeningIsPending(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	planner := &plannerStub{err: ErrScreeningPending, cancel: cancel}
+	worker, err := NewWorker(planner, Policy{
+		AssetID: "asset-1", MinimumAmount: "100", MaxSnapshotAge: time.Minute,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), WorkerConfig{
+		OperationTimeout: time.Second, IdleInterval: time.Millisecond,
+		RetryMin: time.Millisecond, RetryMax: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewWorker() error = %v", err)
+	}
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
 type plannerStub struct {
 	plan   Plan
 	err    error

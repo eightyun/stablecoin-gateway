@@ -108,6 +108,7 @@ func (provider *HTTPProvider) Screen(ctx context.Context, request Request) (Resu
 		RequestID          string `json:"request_id"`
 		PayoutID           string `json:"payout_id,omitempty"`
 		DepositScreeningID string `json:"deposit_screening_id,omitempty"`
+		SweepScreeningID   string `json:"sweep_screening_id,omitempty"`
 		Direction          string `json:"direction"`
 		Network            string `json:"network"`
 		AssetID            string `json:"asset_id"`
@@ -118,7 +119,8 @@ func (provider *HTTPProvider) Screen(ctx context.Context, request Request) (Resu
 	}{
 		RequestID: request.RequestID, PayoutID: request.PayoutID,
 		DepositScreeningID: request.DepositScreeningID, Direction: request.Direction,
-		Network: request.Network, AssetID: request.AssetID, ContractAddress: request.ContractAddress,
+		SweepScreeningID: request.SweepScreeningID,
+		Network:          request.Network, AssetID: request.AssetID, ContractAddress: request.ContractAddress,
 		SourceAddress: request.SourceAddress, DestinationAddress: request.DestinationAddress,
 		Amount: request.Amount,
 	})
@@ -184,6 +186,7 @@ func normalizeRequest(request Request) Request {
 	request.Direction = strings.TrimSpace(request.Direction)
 	request.PayoutID = strings.TrimSpace(request.PayoutID)
 	request.DepositScreeningID = strings.TrimSpace(request.DepositScreeningID)
+	request.SweepScreeningID = strings.TrimSpace(request.SweepScreeningID)
 	request.Network = strings.TrimSpace(request.Network)
 	request.AssetID = strings.TrimSpace(request.AssetID)
 	request.ContractAddress = strings.TrimSpace(request.ContractAddress)
@@ -203,11 +206,19 @@ func validateProviderRequest(request Request) error {
 	}
 	switch request.Direction {
 	case DirectionOutbound:
-		if !identity.ValidUUID(request.PayoutID) || request.DepositScreeningID != "" || request.SourceAddress != "" {
+		if !identity.ValidUUID(request.PayoutID) || request.DepositScreeningID != "" ||
+			request.SweepScreeningID != "" || request.SourceAddress != "" {
 			return ErrInvalidProviderRequest
 		}
 	case DirectionInbound:
-		if request.PayoutID != "" || !identity.ValidUUID(request.DepositScreeningID) ||
+		if request.PayoutID != "" || request.SweepScreeningID != "" ||
+			!identity.ValidUUID(request.DepositScreeningID) ||
+			request.SourceAddress == "" || len(request.SourceAddress) > 128 {
+			return ErrInvalidProviderRequest
+		}
+	case DirectionSweep:
+		if request.PayoutID != "" || request.DepositScreeningID != "" ||
+			!identity.ValidUUID(request.SweepScreeningID) ||
 			request.SourceAddress == "" || len(request.SourceAddress) > 128 {
 			return ErrInvalidProviderRequest
 		}

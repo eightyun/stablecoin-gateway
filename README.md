@@ -49,6 +49,7 @@
 - 独立业务风险监控进程，以及覆盖对账差异、出款积压、Outbox 死信、索引停滞和任务过期的 Prometheus 告警规则
 - 基于租约和不可变结果的出款地址筛查 Worker；筛查缺失、非 allow 或过期时禁止批准
 - 基于已固化链事件的入金来源地址筛查 Worker；只有有效 allow 才能入账，deny/review 自动隔离
+- 绑定来源地址、目标热钱包、固化快照和精确金额的归集前筛查；只有当前有效 allow 才创建计划
 - 基于固化钱包快照和完整入金来源证明的归集 Planner，以及带余额预检、隔离签名、原交易广播恢复和固化终态的执行链路
 
 尚未完成：外部法币/PSP 通道余额适配与对账、监控仪表盘，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
@@ -104,9 +105,22 @@ export GATEWAY_OBSERVABILITY_ADDR='127.0.0.1:9097'
 go run ./cmd/gateway-sweep-planner
 ```
 
-Planner 要求资产恰好有一个活动热钱包、索引游标已越过快照高度，并验证截至该高度的全部入金事件均已成功匹配且入金地址筛查结果为 `allow`；入金事件总额扣除已成功归集额后，必须与地址快照余额完全一致。任一证据缺失都会跳过该地址。该进程只写不可变 `sweep_plans`，不读取私钥、不广播、不修改账本。
+Planner 要求资产恰好有一个活动热钱包、索引游标已越过快照高度，并验证截至该高度的全部入金事件均已成功匹配且入金地址筛查结果为 `allow`；入金事件总额扣除已成功归集额后，必须与地址快照余额完全一致。任一证据缺失都会跳过该地址。该进程只写不可变的归集筛查证据和 `sweep_plans`，不读取私钥、不广播、不修改账本。
 
-Planner 校验筛查结果在充值匹配发生时仍然有效，而不是要求已经关闭的入金筛查结果在未来归集时仍未过期。该证据只证明“入账时允许”；生产环境若要求归集时重新评估地址风险，应部署独立的归集前筛查状态机，不能把历史结果当作当前风险结论。
+Planner 校验入金筛查在充值匹配时有效，同时为符合条件的来源创建独立的归集前筛查任务。任务绑定来源地址、目标热钱包、固化快照和精确金额；只有当前结果为有效 `allow` 时才会创建计划，`deny`/`review`、缺失或过期结果都安全阻断。
+
+在 Planner 之前启动归集筛查 Worker，Provider 复用 `/v1/address-screenings` 契约，方向为 `sweep`：
+
+```bash
+export GATEWAY_SWEEP_SCREENING_WORKER_ID='sweep-screening-1'
+export GATEWAY_SCREENING_PROVIDER_URL='https://screening-adapter.internal'
+export GATEWAY_SCREENING_PROVIDER_NAME='production-provider'
+export GATEWAY_SCREENING_PROVIDER_BEARER_TOKEN='从密钥管理服务注入'
+
+go run ./cmd/gateway-sweep-screening-worker
+```
+
+部署顺序为数据库迁移、归集筛查 Worker、Planner。若 Worker 未运行，Planner 只会停留在筛查任务，不会创建计划或进入签名。
 
 配置隔离 signer 并启动归集签名 Worker：
 
@@ -142,7 +156,7 @@ export GATEWAY_SWEEP_ACCEPTANCE_MAX_AMOUNT='1000000'
 go run ./cmd/gateway-sweep-acceptance
 ```
 
-该命令硬性拒绝主网，并要求来源、目标地址及最大金额显式配置；来源当前余额超过最大金额时不会创建计划。签名服务必须先独立启动，输出只包含计划、交易、快照和对账运行标识，不输出密钥或签名原文。请勿在共享生产数据库中执行。
+该命令硬性拒绝主网，并要求来源、目标地址及最大金额显式配置；来源当前余额超过最大金额时不会创建计划。归集筛查 Worker 和签名服务必须先独立启动；命令会在受控超时内等待筛查结果。输出只包含计划、交易、快照和对账运行标识，不输出密钥或签名原文。请勿在共享生产数据库中执行。
 
 登记参与快照的热钱包、冷钱包或手续费钱包：
 
@@ -212,7 +226,7 @@ Worker 默认拒绝私网、回环和链路本地目标，且不跟随重定向�
 
 ## 监控与告警
 
-Indexer、入金筛查、充值匹配、归集规划、归集签名、归集执行、出款筛查、出款签名、出款执行和 Webhook Worker 默认在 `127.0.0.1:9090` 暴露：
+Indexer、入金筛查、充值匹配、归集前筛查、归集规划、归集签名、归集执行、出款筛查、出款签名、出款执行和 Webhook Worker 默认在 `127.0.0.1:9090` 暴露：
 
 - `GET /healthz`：进程存活探针
 - `GET /readyz`：带超时的 PostgreSQL 就绪探针

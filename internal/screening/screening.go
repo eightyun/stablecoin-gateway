@@ -12,6 +12,7 @@ const (
 	DecisionReview    = "review"
 	DirectionInbound  = "inbound"
 	DirectionOutbound = "outbound"
+	DirectionSweep    = "sweep"
 )
 
 // Request 是绑定到单次租约的地址筛查请求。
@@ -20,6 +21,7 @@ type Request struct {
 	Direction          string
 	PayoutID           string
 	DepositScreeningID string
+	SweepScreeningID   string
 	Network            string
 	AssetID            string
 	ContractAddress    string

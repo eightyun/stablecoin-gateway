@@ -14,6 +14,8 @@ var (
 	ErrAssetUnavailable = errors.New("归集资产不存在或未启用")
 	ErrNoCandidate      = errors.New("没有满足安全条件的归集候选")
 	ErrHotWalletCount   = errors.New("资产必须且只能配置一个活动热钱包")
+	ErrScreeningPending = errors.New("归集前地址筛查尚未完成")
+	ErrScreeningBlocked = errors.New("归集前地址筛查未允许")
 )
 
 // Policy 定义生成归集计划所需的安全策略。

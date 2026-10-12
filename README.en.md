@@ -49,6 +49,7 @@ Implemented components:
 - A dedicated business-risk monitor with Prometheus alerts for reconciliation findings, payout backlog, Outbox dead letters, stalled indexing, and stale scheduled controls
 - A leased payout-address screening worker with immutable results; missing, non-allow, or expired screening evidence blocks approval
 - A finalized-event-driven inbound screening worker; only a current allow can be credited, while deny/review results are quarantined
+- Pre-sweep screening bound to the source, hot-wallet destination, finalized snapshot, and exact amount; only a current allow can create a plan
 - A finalized-snapshot sweep planner with balance preflight, isolated signing, exact-transaction broadcast recovery, and finalized execution state
 
 Not yet implemented: external fiat/PSP provider balance adapters and reconciliation, monitoring dashboards, and a production KMS/HSM/MPC signing backend.
@@ -104,9 +105,22 @@ export GATEWAY_OBSERVABILITY_ADDR='127.0.0.1:9097'
 go run ./cmd/gateway-sweep-planner
 ```
 
-The planner requires exactly one active hot wallet, an indexer cursor beyond the snapshot height, and proof that every inbound event through that height was matched and allowed by inbound address screening. Total inbound events minus prior successful sweeps must exactly equal the snapshotted address balance. Missing evidence fails closed. The process only writes immutable `sweep_plans`; it never reads private keys, broadcasts transactions, or changes the ledger.
+The planner requires exactly one active hot wallet, an indexer cursor beyond the snapshot height, and proof that every inbound event through that height was matched and allowed by inbound address screening. Total inbound events minus prior successful sweeps must exactly equal the snapshotted address balance. Missing evidence fails closed. The process only writes immutable sweep-screening evidence and `sweep_plans`; it never reads private keys, broadcasts transactions, or changes the ledger.
 
-The planner verifies that screening was valid when the deposit match was created; it does not require a closed inbound-screening result to remain unexpired indefinitely. This evidence proves only that the deposit was allowed at posting time. Deployments that require current risk evaluation before sweeping must add an independent pre-sweep screening state machine instead of treating historical evidence as a current risk decision.
+The planner verifies that inbound screening was valid when the deposit match was created, then creates an independent pre-sweep screening job for an otherwise eligible source. That job binds the source address, hot-wallet destination, finalized snapshot, and exact amount. A plan is created only while its current result is a valid `allow`; deny/review, missing, and expired results all fail closed.
+
+Start the sweep-screening worker before the planner. The provider reuses the `/v1/address-screenings` contract with direction `sweep`:
+
+```bash
+export GATEWAY_SWEEP_SCREENING_WORKER_ID='sweep-screening-1'
+export GATEWAY_SCREENING_PROVIDER_URL='https://screening-adapter.internal'
+export GATEWAY_SCREENING_PROVIDER_NAME='production-provider'
+export GATEWAY_SCREENING_PROVIDER_BEARER_TOKEN='INJECT_FROM_A_SECRET_MANAGER'
+
+go run ./cmd/gateway-sweep-screening-worker
+```
+
+Deploy in this order: database migration, sweep-screening worker, then planner. Without the worker, the planner safely stops after creating a screening job; it never creates a plan or reaches signing.
 
 Configure an isolated signer and start the sweep-signing worker:
 
@@ -142,7 +156,7 @@ export GATEWAY_SWEEP_ACCEPTANCE_MAX_AMOUNT='1000000'
 go run ./cmd/gateway-sweep-acceptance
 ```
 
-The command hard-rejects mainnet and requires explicit source, destination, and maximum amount bounds. It creates no plan when the current source balance exceeds that maximum. Start the isolated signer separately first. Output contains only plan, transaction, snapshot, and reconciliation identifiers—never keys or signed transaction bytes. Do not run it against a shared production database.
+The command hard-rejects mainnet and requires explicit source, destination, and maximum amount bounds. It creates no plan when the current source balance exceeds that maximum. Start the sweep-screening worker and isolated signer separately first; the command waits for screening within its bounded timeout. Output contains only plan, transaction, snapshot, and reconciliation identifiers—never keys or signed transaction bytes. Do not run it against a shared production database.
 
 Register a hot, cold, or fee wallet that must be included in snapshots:
 
@@ -212,7 +226,7 @@ The worker rejects private, loopback, and link-local targets and does not follow
 
 ## Monitoring and Alerts
 
-The indexer, inbound screener, deposit matcher, sweep planner, sweep signer, sweep executor, payout screener, payout signer, payout executor, and webhook worker expose these endpoints on `127.0.0.1:9090` by default:
+The indexer, inbound screener, deposit matcher, pre-sweep screener, sweep planner, sweep signer, sweep executor, payout screener, payout signer, payout executor, and webhook worker expose these endpoints on `127.0.0.1:9090` by default:
 
 - `GET /healthz`: process liveness
 - `GET /readyz`: timeout-bounded PostgreSQL readiness

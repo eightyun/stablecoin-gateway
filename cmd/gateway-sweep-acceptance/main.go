@@ -33,6 +33,10 @@ type result struct {
 	CompletedAt         time.Time `json:"completed_at"`
 }
 
+type planner interface {
+	PlanNext(context.Context, sweep.Policy) (sweep.Plan, error)
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -109,11 +113,11 @@ func run(parent context.Context) error {
 	if err != nil {
 		return err
 	}
-	plan, err := sweepStore.PlanNext(ctx, sweep.Policy{
+	plan, err := waitForPlan(ctx, sweepStore, sweep.Policy{
 		AssetID: cfg.Planner.AssetID, MinimumAmount: cfg.Planner.MinimumAmount,
 		MaximumAmount: cfg.MaximumAmount, SourceAddress: cfg.SourceAddress,
 		DestinationAddress: cfg.DestinationAddress, MaxSnapshotAge: cfg.Planner.MaxSnapshotAge,
-	})
+	}, cfg.PollInterval)
 	if err != nil {
 		return err
 	}
@@ -166,6 +170,22 @@ func run(parent context.Context) error {
 		return fmt.Errorf("输出归集验收结果: %w", err)
 	}
 	return nil
+}
+
+func waitForPlan(ctx context.Context, store planner, policy sweep.Policy, pollInterval time.Duration) (sweep.Plan, error) {
+	for {
+		plan, err := store.PlanNext(ctx, policy)
+		if !errors.Is(err, sweep.ErrScreeningPending) {
+			return plan, err
+		}
+		timer := time.NewTimer(pollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return sweep.Plan{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func captureSnapshot(

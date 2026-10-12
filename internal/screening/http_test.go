@@ -77,6 +77,37 @@ func TestHTTPProviderScreensInboundAddress(t *testing.T) {
 	}
 }
 
+func TestHTTPProviderScreensSweepAddress(t *testing.T) {
+	now := time.Now().UTC()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body["direction"] != "sweep" ||
+			body["sweep_screening_id"] != screeningTestPayoutID || body["payout_id"] != nil ||
+			body["deposit_screening_id"] != nil ||
+			body["source_address"] != "411111111111111111111111111111111111111111" {
+			t.Fatalf("请求体 = %+v, %v", body, err)
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"decision": "allow", "reason_codes": []string{"low_risk"},
+			"provider_reference": "sweep-123", "checked_at": now,
+			"valid_until": now.Add(time.Hour),
+		})
+	}))
+	defer server.Close()
+	provider, err := NewHTTPProvider(testHTTPConfig(server.URL), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := validScreeningRequest()
+	request.Direction = DirectionSweep
+	request.PayoutID = ""
+	request.SweepScreeningID = screeningTestPayoutID
+	request.SourceAddress = "411111111111111111111111111111111111111111"
+	if result, err := provider.Screen(context.Background(), request); err != nil || result.Decision != DecisionAllow {
+		t.Fatalf("Screen() = %+v, %v", result, err)
+	}
+}
+
 func TestHTTPProviderRejectsInvalidConfigurationAndRequest(t *testing.T) {
 	config := testHTTPConfig("http://provider.example")
 	if _, err := NewHTTPProvider(config, nil); !errors.Is(err, ErrInvalidProviderConfig) {
