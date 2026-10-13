@@ -447,6 +447,7 @@ Only 2xx responses are successful. Delivery is at least once, so merchants must 
 - Nile now covers live deposit posting, a merchant-API-driven payout loop, a dedicated-address-to-hot-wallet sweep, safe-expiry recovery, and before-and-after custody reconciliation.
 - Automated recovery exercises cover payout and sweep worker crashes during broadcast and confirmation. A stale lease cannot advance state, the replacement worker reuses only the original signed transaction and txID, payout settlement and its terminal event happen once, and a sweep never changes merchant ledgers.
 - On 2026-10-13, a live read-only Nile preflight succeeded with a deliberately unreachable preferred endpoint and Nile as the backup. Local fault injection additionally covers same-txID broadcast failover after a primary-node 5xx and no failover for deterministic 4xx responses or business rejection.
+- The explicit node-churn soak test repeatedly moves availability across three local simulated nodes while concurrently verifying finalized reads, immutable same-transaction broadcasts, sticky endpoint switching, and zero pool exhaustion. It does not access the internet, a database, or a wallet.
 - Database disaster recovery now has a real `pg_dump`, isolated `pg_restore`, core-table row-count comparison, and read-only fund-integrity audit. A restored database passes only at the current clean migration version and with no critical fund finding.
 - Mainnet canarying starts only after sustained testnet operation, three-way reconciliation, monitoring and alerting, disaster-recovery exercises, and an external security audit pass.
 - Mainnet is never a general test environment. Every mainnet canary requires a defined loss limit, dual approval, and an emergency stop.
@@ -463,6 +464,15 @@ go test -tags=integration ./internal/sweep \
 ```
 
 These exercises create database-only test assets and simulated signed transactions. They do not access a node, broadcast, or read wallet keys.
+
+Run the local node-churn soak test, which is excluded from default test runs:
+
+```bash
+go test -tags=soak -race ./internal/chain/tron/nodehttp \
+  -run '^TestFailoverSoakUnderEndpointChurn$' -count=1
+```
+
+The test concurrently accesses three in-process HTTP node simulators, repeatedly moves the only available endpoint, and verifies that every broadcast reuses the identical payload and txID.
 
 Restore a backup into an isolated PostgreSQL instance before starting any API or worker. The backup must come from a consistent snapshot, with the recovery point, backup checksum, PostgreSQL version, and encryption-key versions retained as audit evidence. After restoration and core-table row-count comparison, run:
 
