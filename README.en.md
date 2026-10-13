@@ -51,6 +51,7 @@ Implemented components:
 - A finalized-event-driven inbound screening worker; only a current allow can be credited, while deny/review results are quarantined
 - Pre-sweep screening bound to the source, hot-wallet destination, finalized snapshot, and exact amount; only a current allow can create a plan
 - A finalized-snapshot sweep planner with balance preflight, isolated signing, exact-transaction broadcast recovery, and finalized execution state
+- A read-only pre-activation audit for restored PostgreSQL databases covering migration compatibility, ledger/business references, wallet assets, open cases, pending work, and expired leases
 
 Not yet implemented: external fiat/PSP provider balance adapters and reconciliation, monitoring dashboards, and a production KMS/HSM/MPC signing backend.
 
@@ -440,6 +441,7 @@ Only 2xx responses are successful. Delivery is at least once, so merchants must 
 
 - Nile now covers live deposit posting, a merchant-API-driven payout loop, a dedicated-address-to-hot-wallet sweep, safe-expiry recovery, and before-and-after custody reconciliation.
 - Automated recovery exercises cover payout and sweep worker crashes during broadcast and confirmation. A stale lease cannot advance state, the replacement worker reuses only the original signed transaction and txID, payout settlement and its terminal event happen once, and a sweep never changes merchant ledgers.
+- Database disaster recovery now has a real `pg_dump`, isolated `pg_restore`, core-table row-count comparison, and read-only fund-integrity audit. A restored database passes only at the current clean migration version and with no critical fund finding.
 - Mainnet canarying starts only after sustained testnet operation, three-way reconciliation, monitoring and alerting, disaster-recovery exercises, and an external security audit pass.
 - Mainnet is never a general test environment. Every mainnet canary requires a defined loss limit, dual approval, and an emergency stop.
 
@@ -454,7 +456,16 @@ go test -tags=integration ./internal/sweep \
   -run '^TestStoreExecutionLeaseTakeoverRecoversOriginalTransaction$' -count=1
 ```
 
-These exercises create database-only test assets and simulated signed transactions. They do not access a node, broadcast, or read wallet keys. Production disaster-recovery acceptance still requires PostgreSQL backup restoration, node failover, and sustained multi-zone operation.
+These exercises create database-only test assets and simulated signed transactions. They do not access a node, broadcast, or read wallet keys.
+
+Restore a backup into an isolated PostgreSQL instance before starting any API or worker. The backup must come from a consistent snapshot, with the recovery point, backup checksum, PostgreSQL version, and encryption-key versions retained as audit evidence. After restoration and core-table row-count comparison, run:
+
+```bash
+export GATEWAY_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway_restored?sslmode=disable'
+go run ./cmd/gateway-recovery-audit > recovery-audit.json
+```
+
+The command runs in one PostgreSQL repeatable-read, read-only transaction and creates no reconciliation run or business-state mutation. It exits non-zero for a mismatched or dirty migration version, ledger/business-reference corruption, custody shortfall, missing wallet checkpoint, or open critical reconciliation case. On-chain excess, open warning cases, and reclaimable expired leases remain warnings. Passing the audit is not permission to shift traffic by itself: production recovery must also validate the RPO/RTO, the chain-rescan range after the recovery point, node failover, and signer and encryption-key availability.
 
 Before starting the TRON indexer, configure the node, asset contract, initial scan height, and its parent block hash using [.env.example](.env.example), then run:
 
