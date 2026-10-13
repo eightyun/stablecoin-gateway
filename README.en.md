@@ -18,7 +18,7 @@ Implemented components:
 - Transactional Outbox foundation
 - Deterministic TRON simulator
 - SolidityNode finalized-block reader and TRC20 log decoder
-- Multi-endpoint TRON FullNode/SolidityNode failover for reads, transaction construction, and same-txID broadcast
+- Multi-endpoint TRON FullNode/SolidityNode failover with Prometheus alerts for reads, transaction construction, and same-txID broadcast
 - Durable scan cursor with leases and fencing tokens
 - Standalone TRON indexer worker
 - Deposit addresses, deposit intents, and chain-event matching model
@@ -232,7 +232,7 @@ The indexer, inbound screener, deposit matcher, pre-sweep screener, sweep planne
 
 - `GET /healthz`: process liveness
 - `GET /readyz`: timeout-bounded PostgreSQL readiness
-- `GET /metrics`: Prometheus operation results, duration, consecutive failures, last-success time, and running state
+- `GET /metrics`: Prometheus operation results, duration, consecutive failures, last-success time, running state, and TRON node-pool state
 
 ```bash
 export GATEWAY_OBSERVABILITY_ADDR='127.0.0.1:9090'
@@ -242,6 +242,8 @@ curl http://127.0.0.1:9090/metrics
 ```
 
 Assign a different port to each worker when several run directly on the same host. Containers or Kubernetes may reuse the container-local port. If binding beyond loopback, restrict the metrics port with network policy. The repository provides alert rules but does not deploy Prometheus or Alertmanager.
+
+The indexer, sweep signer, payout executor, and sweep executor also expose endpoint count, current preferred endpoint, failures by bounded reason, switches, and pool-exhaustion totals. Labels contain only the operation, endpoint number from 1 through 8, and a bounded reason; node URLs and API keys are never exposed. Alerts cover complete pool exhaustion, sustained backup preference, and frequent switching within 15 minutes.
 
 Start the independent, read-only business-risk monitor:
 
@@ -254,7 +256,7 @@ go run ./cmd/gateway-monitor
 
 The process periodically captures a repeatable-read PostgreSQL snapshot. Prometheus scrapes in-memory gauges and therefore does not query the database at scrape frequency. Metrics cover open reconciliation cases, payout status and oldest creation time, inbound/outbound/pre-sweep screening backlog and risk decisions, expired sweep-screening leases and results, Outbox backlog and dead letters, indexer cursor activity, and the latest reconciliation and wallet-snapshot timestamps. They are observational only and never mutate ledger or business state.
 
-Load [`configs/prometheus/alerts.yml`](configs/prometheus/alerts.yml) into Prometheus. The process-down rule assumes the scrape job is named `stablecoin-gateway-monitor`. The payout, cursor, reconciliation, and wallet-snapshot thresholds are safe starting points and must be tuned to chain finality, scheduling frequency, and production SLAs. Cursor staleness currently detects stopped indexer activity; exact chain-head lag will follow with node-level monitoring.
+Load [`configs/prometheus/alerts.yml`](configs/prometheus/alerts.yml) into Prometheus. The process-down rule assumes the scrape job is named `stablecoin-gateway-monitor`. The payout, node-switching, cursor, reconciliation, and wallet-snapshot thresholds are safe starting points and must be tuned to chain finality, scheduling frequency, and production SLAs. Cursor staleness currently detects stopped indexer activity; exact chain-head lag still requires later node-height sampling.
 
 ## Address Screening
 

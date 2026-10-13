@@ -32,15 +32,6 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	reader, err := nodehttp.New(nodehttp.Config{
-		BaseURL:          cfg.NodeURL,
-		Network:          cfg.Network,
-		APIKey:           cfg.NodeAPIKey,
-		MaxResponseBytes: cfg.MaxResponseBytes,
-	}, nil)
-	if err != nil {
-		return err
-	}
 	databaseConfig := database.DefaultConfig(cfg.DatabaseURL, "gateway-indexer")
 	databaseConfig.MinConnections = 1
 	databaseConfig.MaxConnections = 5
@@ -53,6 +44,16 @@ func run(ctx context.Context) error {
 		Addr: monitoringConfig.Addr, ReadHeaderTimeout: monitoringConfig.ReadHeaderTimeout,
 		ReadinessTimeout: monitoringConfig.ReadinessTimeout, ShutdownTimeout: monitoringConfig.ShutdownTimeout,
 	}, pool)
+	if err != nil {
+		return err
+	}
+	reader, err := nodehttp.New(nodehttp.Config{
+		BaseURL:          cfg.NodeURL,
+		Network:          cfg.Network,
+		APIKey:           cfg.NodeAPIKey,
+		MaxResponseBytes: cfg.MaxResponseBytes,
+		Observer:         monitoring.TRONNodeObserver(),
+	}, nil)
 	if err != nil {
 		return err
 	}

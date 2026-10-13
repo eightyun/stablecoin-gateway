@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,6 +30,7 @@ type WriterConfig struct {
 	BaseURL          string
 	APIKey           string
 	MaxResponseBytes int64
+	Observer         Observer
 }
 
 // Writer 只向 FullNode 广播已经签名的原始交易，不构造或签署交易。
@@ -37,7 +39,9 @@ type Writer struct {
 	apiKey           string
 	maxResponseBytes int64
 	httpClient       *http.Client
+	observer         Observer
 	preferred        atomic.Uint32
+	selectionMu      sync.Mutex
 }
 
 var _ tron.Broadcaster = (*Writer)(nil)
@@ -69,9 +73,11 @@ func NewWriter(config WriterConfig, httpClient *http.Client) (*Writer, error) {
 	configuredHTTPClient.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
+	observer := observerOrNoop(config.Observer)
+	observer.Configured(OperationBroadcast, len(endpoints))
 	return &Writer{
 		endpoints: endpoints, apiKey: strings.TrimSpace(config.APIKey),
-		maxResponseBytes: maxResponseBytes, httpClient: &configuredHTTPClient,
+		maxResponseBytes: maxResponseBytes, httpClient: &configuredHTTPClient, observer: observer,
 	}, nil
 }
 
@@ -84,27 +90,42 @@ func (writer *Writer) Broadcast(ctx context.Context, transaction tron.SignedTran
 	failures := make([]error, 0, len(writer.endpoints))
 	for offset := range writer.endpoints {
 		index := (start + offset) % len(writer.endpoints)
-		retryable, err := writer.broadcastToEndpoint(ctx, writer.endpoints[index], transaction)
+		retryable, reason, err := writer.broadcastToEndpoint(ctx, writer.endpoints[index], transaction)
 		if err == nil {
-			writer.preferred.Store(uint32(index))
+			writer.selectPreferred(index)
 			return nil
+		}
+		if reason != "" {
+			writer.observer.Failed(OperationBroadcast, index, reason)
 		}
 		failures = append(failures, fmt.Errorf("TRON 广播端点 %d: %w", index+1, err))
 		if !retryable || ctx.Err() != nil {
 			return failures[len(failures)-1]
 		}
 	}
+	writer.observer.Exhausted(OperationBroadcast)
 	return fmt.Errorf("所有 TRON 广播端点均不可用: %w", errors.Join(failures...))
+}
+
+func (writer *Writer) selectPreferred(index int) {
+	writer.selectionMu.Lock()
+	defer writer.selectionMu.Unlock()
+	previous := int(writer.preferred.Load()) % len(writer.endpoints)
+	if previous == index {
+		return
+	}
+	writer.preferred.Store(uint32(index))
+	writer.observer.Switched(OperationBroadcast, previous, index)
 }
 
 func (writer *Writer) broadcastToEndpoint(
 	ctx context.Context,
 	endpoint string,
 	transaction tron.SignedTransaction,
-) (bool, error) {
+) (bool, string, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(transaction.Payload))
 	if err != nil {
-		return false, fmt.Errorf("创建 TRON 广播请求: %w", err)
+		return false, FailureResponseInvalid, fmt.Errorf("创建 TRON 广播请求: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
@@ -113,18 +134,29 @@ func (writer *Writer) broadcastToEndpoint(
 	}
 	response, err := writer.httpClient.Do(request)
 	if err != nil {
-		return ctx.Err() == nil, fmt.Errorf("调用 TRON 广播接口: %w", err)
+		if ctx.Err() != nil {
+			return false, "", fmt.Errorf("调用 TRON 广播接口: %w", err)
+		}
+		return true, FailureTransport, fmt.Errorf("调用 TRON 广播接口: %w", err)
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, writer.maxResponseBytes+1))
 	if err != nil {
-		return ctx.Err() == nil, fmt.Errorf("读取 TRON 广播响应: %w", err)
+		if ctx.Err() != nil {
+			return false, "", fmt.Errorf("读取 TRON 广播响应: %w", err)
+		}
+		return true, FailureResponseRead, fmt.Errorf("读取 TRON 广播响应: %w", err)
 	}
 	if int64(len(responseBody)) > writer.maxResponseBytes {
-		return true, ErrResponseTooLarge
+		return true, FailureResponseTooLarge, ErrResponseTooLarge
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return retryableHTTPStatus(response.StatusCode),
+		retryable := retryableHTTPStatus(response.StatusCode)
+		reason := FailureRequestRejected
+		if retryable {
+			reason = FailureHTTPRetryable
+		}
+		return retryable, reason,
 			fmt.Errorf("TRON 广播接口返回 HTTP %d: %w", response.StatusCode, ErrBroadcastRejected)
 	}
 	var result struct {
@@ -134,21 +166,21 @@ func (writer *Writer) broadcastToEndpoint(
 	}
 	decoder := json.NewDecoder(bytes.NewReader(responseBody))
 	if err := decoder.Decode(&result); err != nil || result.Accepted == nil {
-		return true, ErrInvalidResponse
+		return true, FailureResponseInvalid, ErrInvalidResponse
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return true, ErrInvalidResponse
+		return true, FailureResponseInvalid, ErrInvalidResponse
 	}
 	if !*result.Accepted {
 		code := strings.TrimSpace(result.Code)
 		if code == "" {
-			return false, ErrBroadcastRejected
+			return false, FailureRequestRejected, ErrBroadcastRejected
 		}
-		return false, fmt.Errorf("TRON 广播错误码 %s: %w", code, ErrBroadcastRejected)
+		return false, FailureRequestRejected, fmt.Errorf("TRON 广播错误码 %s: %w", code, ErrBroadcastRejected)
 	}
 	if result.TransactionID != transaction.ID {
-		return true, ErrInvalidResponse
+		return true, FailureResponseInvalid, ErrInvalidResponse
 	}
-	return false, nil
+	return false, "", nil
 }

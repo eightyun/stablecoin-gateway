@@ -55,6 +55,7 @@ func run(ctx context.Context) error {
 	reader, err := nodehttp.New(nodehttp.Config{
 		BaseURL: cfg.SolidityNodeURL, Network: cfg.Network,
 		APIKey: cfg.NodeAPIKey, MaxResponseBytes: cfg.NodeMaxResponseBytes,
+		Observer: monitoring.TRONNodeObserver(),
 	}, nil)
 	if err != nil {
 		return err

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/eightyun/stablecoin-gateway/internal/background"
+	"github.com/eightyun/stablecoin-gateway/internal/chain/tron/nodehttp"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -37,6 +38,7 @@ type Service struct {
 	server   *http.Server
 	registry *prometheus.Registry
 	observer *WorkerObserver
+	node     *TRONNodeObserver
 }
 
 // New 创建使用独立指标注册表的可观测性服务。
@@ -52,6 +54,10 @@ func New(config Config, checker ReadinessChecker) (*Service, error) {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
 	observer, err := NewWorkerObserver(registry)
+	if err != nil {
+		return nil, err
+	}
+	nodeObserver, err := NewTRONNodeObserver(registry)
 	if err != nil {
 		return nil, err
 	}
@@ -82,6 +88,7 @@ func New(config Config, checker ReadinessChecker) (*Service, error) {
 		},
 		registry: registry,
 		observer: observer,
+		node:     nodeObserver,
 	}, nil
 }
 
@@ -103,6 +110,11 @@ func (service *Service) Register(collectors ...prometheus.Collector) error {
 // WorkerObserver 返回供后台运行器复用的进程级指标观察器。
 func (service *Service) WorkerObserver() background.Observer {
 	return service.observer
+}
+
+// TRONNodeObserver 返回供 TRON 节点客户端复用的进程级观察器。
+func (service *Service) TRONNodeObserver() nodehttp.Observer {
+	return service.node
 }
 
 // Run 运行指标服务和工作负载；任一方退出都会取消另一方并有界关闭。

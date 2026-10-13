@@ -70,6 +70,7 @@ func TestWriterRejectsNodeRejectionAndMismatchedResponse(t *testing.T) {
 
 func TestWriterFailsOverWithIdenticalTransaction(t *testing.T) {
 	payload := signedPayload(writerTxID)
+	observer := &nodeObserverStub{}
 	var primaryCalls atomic.Int64
 	primary := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		primaryCalls.Add(1)
@@ -91,7 +92,7 @@ func TestWriterFailsOverWithIdenticalTransaction(t *testing.T) {
 	}))
 	defer backup.Close()
 	writer, err := nodehttp.NewWriter(nodehttp.WriterConfig{
-		BaseURL: primary.URL + "," + backup.URL,
+		BaseURL: primary.URL + "," + backup.URL, Observer: observer,
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewWriter() error = %v", err)
@@ -104,6 +105,13 @@ func TestWriterFailsOverWithIdenticalTransaction(t *testing.T) {
 	}
 	if primaryCalls.Load() != 1 || backupCalls.Load() != 2 {
 		t.Fatalf("节点调用次数 primary=%d backup=%d", primaryCalls.Load(), backupCalls.Load())
+	}
+	if observer.configuredOperation != nodehttp.OperationBroadcast || observer.configuredEndpoints != 2 ||
+		len(observer.failures) != 1 || observer.failures[0].reason != nodehttp.FailureHTTPRetryable ||
+		len(observer.switches) != 1 || observer.switches[0] != (observedSwitch{
+		operation: nodehttp.OperationBroadcast, from: 0, to: 1,
+	}) || observer.exhausted != 0 {
+		t.Fatalf("广播观察事件 = %+v", observer)
 	}
 }
 

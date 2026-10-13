@@ -18,7 +18,7 @@
 - Transactional Outbox 基础能力
 - TRON 确定性模拟器
 - SolidityNode 已固化区块读取与 TRC20 日志解析
-- TRON FullNode/SolidityNode 多端点故障切换，覆盖读取、交易构造和同 txID 广播
+- TRON FullNode/SolidityNode 多端点故障切换及 Prometheus 告警，覆盖读取、交易构造和同 txID 广播
 - 带租约和栅栏令牌的持久化扫描游标
 - 独立 TRON 扫描 Worker
 - 充值地址、充值意图和链事件匹配模型
@@ -232,7 +232,7 @@ Indexer、入金筛查、充值匹配、归集前筛查、归集规划、归集�
 
 - `GET /healthz`：进程存活探针
 - `GET /readyz`：带超时的 PostgreSQL 就绪探针
-- `GET /metrics`：Prometheus 指标，包括执行结果、耗时、连续失败、最后成功时间和运行状态
+- `GET /metrics`：Prometheus 指标，包括执行结果、耗时、连续失败、最后成功时间、运行状态和 TRON 节点池状态
 
 ```bash
 export GATEWAY_OBSERVABILITY_ADDR='127.0.0.1:9090'
@@ -242,6 +242,8 @@ curl http://127.0.0.1:9090/metrics
 ```
 
 多个 Worker 在同一主机直接运行时必须分配不同端口。容器或 Kubernetes 可复用容器内端口；如果监听非回环地址，应通过网络策略限制指标端口访问。仓库提供告警规则，但不负责部署 Prometheus 或 Alertmanager。
+
+Indexer、归集签名、出款执行和归集执行进程还暴露节点端点数量、当前首选端点、固定原因分类的失败次数、切换次数和节点池耗尽次数。指标只使用 `operation`、1～8 的端点序号及固定原因标签，不包含节点 URL 或 API Key。告警覆盖全部节点不可用、持续使用备用节点和 15 分钟内频繁切换。
 
 独立启动只读业务风险监控进程：
 
@@ -254,7 +256,7 @@ go run ./cmd/gateway-monitor
 
 该进程在 PostgreSQL 可重复读事务内周期采集快照，Prometheus 抓取只读取内存 Gauge，不会按抓取频率查询数据库。它暴露未关闭对账工单、出款状态与最早创建时间、入金/出款/归集筛查积压和风险决策、归集筛查失效租约与过期结果、Outbox 积压与死信、索引游标活动、最近对账和钱包快照时间。指标只用于监控，不会自动改账或改变业务状态。
 
-可直接加载 [`configs/prometheus/alerts.yml`](configs/prometheus/alerts.yml)；其中进程存活规则约定 Prometheus job 名为 `stablecoin-gateway-monitor`。出款等待、索引停滞、日终对账和钱包快照阈值是安全起点，上线前必须按节点固化速度、任务调度频率和业务 SLA 调整。当前索引告警检测游标是否停止活动，精确的链头高度差将在接入节点级监控后补充。
+可直接加载 [`configs/prometheus/alerts.yml`](configs/prometheus/alerts.yml)；其中进程存活规则约定 Prometheus job 名为 `stablecoin-gateway-monitor`。出款等待、节点切换、索引停滞、日终对账和钱包快照阈值是安全起点，上线前必须按节点固化速度、任务调度频率和业务 SLA 调整。当前索引告警检测游标是否停止活动，精确的链头高度差仍需在后续节点高度采样中补充。
 
 ## 地址筛查
 

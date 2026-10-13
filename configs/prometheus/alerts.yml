@@ -226,6 +226,31 @@ groups:
           summary: 归集确认时间过长
           description: 最早一笔 confirming 归集创建已超过 15 分钟，请检查节点与链上交易。
 
+      - alert: StablecoinGatewayTRONNodePoolExhausted
+        expr: sum by (job, instance, operation) (increase(stablecoin_gateway_tron_node_pool_exhausted_total[5m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: TRON 节点池全部不可用
+          description: 最近 5 分钟内 {{ $labels.operation }} 操作至少一次耗尽全部已配置节点。
+
+      - alert: StablecoinGatewayTRONNodeUsingBackup
+        expr: stablecoin_gateway_tron_node_preferred{endpoint!="1"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: TRON 节点持续使用备用端点
+          description: 操作 {{ $labels.operation }} 已连续 5 分钟优先使用第 {{ $labels.endpoint }} 个节点端点。
+
+      - alert: StablecoinGatewayTRONNodeFrequentFailover
+        expr: sum by (job, instance, operation) (increase(stablecoin_gateway_tron_node_switches_total[15m])) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: TRON 节点频繁切换
+          description: 操作 {{ $labels.operation }} 在 15 分钟内累计切换节点至少 3 次。
+
       - alert: StablecoinGatewayIndexerCursorStale
         expr: (time() - stablecoin_gateway_business_indexer_cursor_updated_timestamp_seconds) > 120
         for: 2m

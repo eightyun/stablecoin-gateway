@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eightyun/stablecoin-gateway/internal/chain/tron/nodehttp"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -17,6 +18,11 @@ func TestServiceHealthReadinessAndMetrics(t *testing.T) {
 	service := newTestService(t, checker)
 	service.observer.Started("test-worker")
 	service.observer.Succeeded("test-worker", true, 20*time.Millisecond)
+	nodeObserver := service.TRONNodeObserver()
+	nodeObserver.Configured(nodehttp.OperationRead, 2)
+	nodeObserver.Failed(nodehttp.OperationRead, 0, nodehttp.FailureHTTPRetryable)
+	nodeObserver.Switched(nodehttp.OperationRead, 0, 1)
+	nodeObserver.Exhausted(nodehttp.OperationRead)
 
 	health := httptest.NewRecorder()
 	service.server.Handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -33,7 +39,13 @@ func TestServiceHealthReadinessAndMetrics(t *testing.T) {
 	body := metrics.Body.String()
 	if metrics.Code != http.StatusOK ||
 		!strings.Contains(body, `stablecoin_gateway_worker_operations_total{result="worked",worker="test-worker"} 1`) ||
-		!strings.Contains(body, `stablecoin_gateway_worker_running{worker="test-worker"} 1`) {
+		!strings.Contains(body, `stablecoin_gateway_worker_running{worker="test-worker"} 1`) ||
+		!strings.Contains(body, `stablecoin_gateway_tron_node_endpoint_count{operation="read"} 2`) ||
+		!strings.Contains(body, `stablecoin_gateway_tron_node_preferred{endpoint="2",operation="read"} 1`) ||
+		!strings.Contains(body, `stablecoin_gateway_tron_node_failures_total{endpoint="1",operation="read",reason="http_retryable"} 1`) ||
+		!strings.Contains(body, `stablecoin_gateway_tron_node_switches_total{from="1",operation="read",to="2"} 1`) ||
+		!strings.Contains(body, `stablecoin_gateway_tron_node_pool_exhausted_total{operation="read"} 1`) ||
+		strings.Contains(body, "node.example") {
 		t.Fatalf("metrics status=%d body=%s", metrics.Code, body)
 	}
 }

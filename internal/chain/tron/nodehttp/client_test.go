@@ -322,6 +322,7 @@ func TestClientHandlesNodeErrorsAndLimits(t *testing.T) {
 }
 
 func TestClientFailsOverAndKeepsWorkingEndpoint(t *testing.T) {
+	observer := &nodeObserverStub{}
 	var primaryCalls atomic.Int64
 	primary := newNodeServer(t, func(writer http.ResponseWriter, _ *http.Request) {
 		primaryCalls.Add(1)
@@ -336,7 +337,7 @@ func TestClientFailsOverAndKeepsWorkingEndpoint(t *testing.T) {
 		writeJSON(writer, blockJSON(nil))
 	})
 	client, err := nodehttp.New(nodehttp.Config{
-		BaseURL: primary.URL + ", " + backup.URL, Network: "tron-mainnet",
+		BaseURL: primary.URL + ", " + backup.URL, Network: "tron-mainnet", Observer: observer,
 	}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -348,6 +349,14 @@ func TestClientFailsOverAndKeepsWorkingEndpoint(t *testing.T) {
 	}
 	if primaryCalls.Load() != 1 || backupCalls.Load() != 2 {
 		t.Fatalf("节点调用次数 primary=%d backup=%d", primaryCalls.Load(), backupCalls.Load())
+	}
+	if observer.configuredOperation != nodehttp.OperationRead || observer.configuredEndpoints != 2 ||
+		len(observer.failures) != 1 || observer.failures[0] != (observedFailure{
+		operation: nodehttp.OperationRead, endpoint: 0, reason: nodehttp.FailureHTTPRetryable,
+	}) || len(observer.switches) != 1 || observer.switches[0] != (observedSwitch{
+		operation: nodehttp.OperationRead, from: 0, to: 1,
+	}) || observer.exhausted != 0 {
+		t.Fatalf("观察事件 = %+v", observer)
 	}
 }
 
@@ -394,6 +403,28 @@ func TestClientFailsOverOnInvalidJSON(t *testing.T) {
 	}
 	if backupCalls.Load() != 1 {
 		t.Fatalf("无效 JSON 后备用节点调用次数 = %d", backupCalls.Load())
+	}
+}
+
+func TestClientObservesExhaustedNodePool(t *testing.T) {
+	first := newNodeServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+		http.Error(writer, "unavailable", http.StatusServiceUnavailable)
+	})
+	second := newNodeServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+		http.Error(writer, "unavailable", http.StatusBadGateway)
+	})
+	observer := &nodeObserverStub{}
+	client, err := nodehttp.New(nodehttp.Config{
+		BaseURL: first.URL + "," + second.URL, Network: "tron-mainnet", Observer: observer,
+	}, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if _, err := client.SolidifiedHead(context.Background()); !errors.Is(err, nodehttp.ErrInvalidResponse) {
+		t.Fatalf("SolidifiedHead() error = %v", err)
+	}
+	if len(observer.failures) != 2 || observer.exhausted != 1 || len(observer.switches) != 0 {
+		t.Fatalf("节点池耗尽观察事件 = %+v", observer)
 	}
 }
 
@@ -459,4 +490,45 @@ func addressTopic(address string) string {
 
 func uint256Hex(value uint64) string {
 	return fmt.Sprintf("%064x", value)
+}
+
+type observedFailure struct {
+	operation string
+	endpoint  int
+	reason    string
+}
+
+type observedSwitch struct {
+	operation string
+	from      int
+	to        int
+}
+
+type nodeObserverStub struct {
+	configuredOperation string
+	configuredEndpoints int
+	failures            []observedFailure
+	switches            []observedSwitch
+	exhausted           int
+}
+
+func (observer *nodeObserverStub) Configured(operation string, endpointCount int) {
+	observer.configuredOperation = operation
+	observer.configuredEndpoints = endpointCount
+}
+
+func (observer *nodeObserverStub) Failed(operation string, endpointIndex int, reason string) {
+	observer.failures = append(observer.failures, observedFailure{
+		operation: operation, endpoint: endpointIndex, reason: reason,
+	})
+}
+
+func (observer *nodeObserverStub) Switched(operation string, previousEndpointIndex, currentEndpointIndex int) {
+	observer.switches = append(observer.switches, observedSwitch{
+		operation: operation, from: previousEndpointIndex, to: currentEndpointIndex,
+	})
+}
+
+func (observer *nodeObserverStub) Exhausted(string) {
+	observer.exhausted++
 }

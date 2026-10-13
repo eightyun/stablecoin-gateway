@@ -54,6 +54,7 @@ func run(ctx context.Context) error {
 	broadcaster, err := nodehttp.NewWriter(nodehttp.WriterConfig{
 		BaseURL: cfg.FullNodeURL, APIKey: cfg.NodeAPIKey,
 		MaxResponseBytes: cfg.BroadcastMaxResponseBytes,
+		Observer:         monitoring.TRONNodeObserver(),
 	}, nil)
 	if err != nil {
 		return err
@@ -61,6 +62,7 @@ func run(ctx context.Context) error {
 	reader, err := nodehttp.New(nodehttp.Config{
 		BaseURL: cfg.SolidityNodeURL, Network: cfg.Network,
 		APIKey: cfg.NodeAPIKey, MaxResponseBytes: cfg.NodeMaxResponseBytes,
+		Observer: monitoring.TRONNodeObserver(),
 	}, nil)
 	if err != nil {
 		return err
