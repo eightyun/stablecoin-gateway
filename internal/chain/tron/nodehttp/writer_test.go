@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/eightyun/stablecoin-gateway/internal/chain/tron"
@@ -67,6 +68,71 @@ func TestWriterRejectsNodeRejectionAndMismatchedResponse(t *testing.T) {
 	}
 }
 
+func TestWriterFailsOverWithIdenticalTransaction(t *testing.T) {
+	payload := signedPayload(writerTxID)
+	var primaryCalls atomic.Int64
+	primary := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		primaryCalls.Add(1)
+		body, _ := io.ReadAll(request.Body)
+		if string(body) != string(payload) {
+			t.Fatalf("主节点广播载荷 = %q", body)
+		}
+		http.Error(response, "temporarily unavailable", http.StatusServiceUnavailable)
+	}))
+	defer primary.Close()
+	var backupCalls atomic.Int64
+	backup := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		backupCalls.Add(1)
+		body, _ := io.ReadAll(request.Body)
+		if string(body) != string(payload) {
+			t.Fatalf("备用节点广播载荷 = %q", body)
+		}
+		_, _ = response.Write([]byte(`{"result":true,"txid":"` + writerTxID + `"}`))
+	}))
+	defer backup.Close()
+	writer, err := nodehttp.NewWriter(nodehttp.WriterConfig{
+		BaseURL: primary.URL + "," + backup.URL,
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	transaction := tron.SignedTransaction{ID: writerTxID, Payload: payload}
+	for range 2 {
+		if err := writer.Broadcast(context.Background(), transaction); err != nil {
+			t.Fatalf("Broadcast() error = %v", err)
+		}
+	}
+	if primaryCalls.Load() != 1 || backupCalls.Load() != 2 {
+		t.Fatalf("节点调用次数 primary=%d backup=%d", primaryCalls.Load(), backupCalls.Load())
+	}
+}
+
+func TestWriterDoesNotFailOverOnNodeRejection(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = response.Write([]byte(`{"result":false,"code":"CONTRACT_VALIDATE_ERROR"}`))
+	}))
+	defer primary.Close()
+	var backupCalls atomic.Int64
+	backup := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		backupCalls.Add(1)
+		_, _ = response.Write([]byte(`{"result":true,"txid":"` + writerTxID + `"}`))
+	}))
+	defer backup.Close()
+	writer, err := nodehttp.NewWriter(nodehttp.WriterConfig{BaseURL: primary.URL + "," + backup.URL}, nil)
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	err = writer.Broadcast(context.Background(), tron.SignedTransaction{
+		ID: writerTxID, Payload: signedPayload(writerTxID),
+	})
+	if !errors.Is(err, nodehttp.ErrBroadcastRejected) {
+		t.Fatalf("Broadcast() error = %v", err)
+	}
+	if backupCalls.Load() != 0 {
+		t.Fatalf("节点拒绝后访问了备用节点 %d 次", backupCalls.Load())
+	}
+}
+
 func TestWriterRejectsInvalidSignedTransaction(t *testing.T) {
 	writer, err := nodehttp.NewWriter(nodehttp.WriterConfig{BaseURL: "https://node.example"}, nil)
 	if err != nil {
@@ -79,6 +145,21 @@ func TestWriterRejectsInvalidSignedTransaction(t *testing.T) {
 	} {
 		if err := writer.Broadcast(context.Background(), transaction); !errors.Is(err, tron.ErrInvalidSignedTransaction) {
 			t.Fatalf("Broadcast(%+v) error = %v", transaction, err)
+		}
+	}
+}
+
+func TestNewWriterRejectsInvalidConfiguration(t *testing.T) {
+	for _, config := range []nodehttp.WriterConfig{
+		{},
+		{BaseURL: "ftp://node"},
+		{BaseURL: "https://user:pass@node"},
+		{BaseURL: "https://node?secret=value"},
+		{BaseURL: "https://node,,https://backup"},
+		{BaseURL: "https://1,https://2,https://3,https://4,https://5,https://6,https://7,https://8,https://9"},
+	} {
+		if _, err := nodehttp.NewWriter(config, nil); !errors.Is(err, nodehttp.ErrInvalidWriterConfig) {
+			t.Errorf("NewWriter(%+v) error = %v", config, err)
 		}
 	}
 }

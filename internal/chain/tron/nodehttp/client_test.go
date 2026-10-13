@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -320,12 +321,90 @@ func TestClientHandlesNodeErrorsAndLimits(t *testing.T) {
 	})
 }
 
+func TestClientFailsOverAndKeepsWorkingEndpoint(t *testing.T) {
+	var primaryCalls atomic.Int64
+	primary := newNodeServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+		primaryCalls.Add(1)
+		http.Error(writer, "temporarily unavailable", http.StatusServiceUnavailable)
+	})
+	var backupCalls atomic.Int64
+	backup := newNodeServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		backupCalls.Add(1)
+		if request.URL.Path != "/walletsolidity/getnowblock" {
+			t.Fatalf("备用节点请求路径 = %s", request.URL.Path)
+		}
+		writeJSON(writer, blockJSON(nil))
+	})
+	client, err := nodehttp.New(nodehttp.Config{
+		BaseURL: primary.URL + ", " + backup.URL, Network: "tron-mainnet",
+	}, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	for range 2 {
+		if _, err := client.SolidifiedHead(context.Background()); err != nil {
+			t.Fatalf("SolidifiedHead() error = %v", err)
+		}
+	}
+	if primaryCalls.Load() != 1 || backupCalls.Load() != 2 {
+		t.Fatalf("节点调用次数 primary=%d backup=%d", primaryCalls.Load(), backupCalls.Load())
+	}
+}
+
+func TestClientDoesNotFailOverOnDeterministicHTTPError(t *testing.T) {
+	primary := newNodeServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+		http.Error(writer, "bad request", http.StatusBadRequest)
+	})
+	var backupCalls atomic.Int64
+	backup := newNodeServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+		backupCalls.Add(1)
+		writeJSON(writer, blockJSON(nil))
+	})
+	client, err := nodehttp.New(nodehttp.Config{
+		BaseURL: primary.URL + "," + backup.URL, Network: "tron-mainnet",
+	}, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if _, err := client.SolidifiedHead(context.Background()); !errors.Is(err, nodehttp.ErrInvalidResponse) {
+		t.Fatalf("SolidifiedHead() error = %v", err)
+	}
+	if backupCalls.Load() != 0 {
+		t.Fatalf("确定性错误访问了备用节点 %d 次", backupCalls.Load())
+	}
+}
+
+func TestClientFailsOverOnInvalidJSON(t *testing.T) {
+	primary := newNodeServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte(`{"incomplete"`))
+	})
+	var backupCalls atomic.Int64
+	backup := newNodeServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+		backupCalls.Add(1)
+		writeJSON(writer, blockJSON(nil))
+	})
+	client, err := nodehttp.New(nodehttp.Config{
+		BaseURL: primary.URL + "," + backup.URL, Network: "tron-mainnet",
+	}, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if _, err := client.SolidifiedHead(context.Background()); err != nil {
+		t.Fatalf("SolidifiedHead() error = %v", err)
+	}
+	if backupCalls.Load() != 1 {
+		t.Fatalf("无效 JSON 后备用节点调用次数 = %d", backupCalls.Load())
+	}
+}
+
 func TestNewRejectsInvalidConfiguration(t *testing.T) {
 	for _, config := range []nodehttp.Config{
 		{},
 		{BaseURL: "ftp://node", Network: "tron"},
 		{BaseURL: "https://user:pass@node", Network: "tron"},
 		{BaseURL: "https://node?secret=value", Network: "tron"},
+		{BaseURL: "https://node,,https://backup", Network: "tron"},
+		{BaseURL: "https://1,https://2,https://3,https://4,https://5,https://6,https://7,https://8,https://9", Network: "tron"},
 		{BaseURL: "https://node", Network: ""},
 		{BaseURL: "https://node", Network: "tron", MaxResponseBytes: -1},
 	} {

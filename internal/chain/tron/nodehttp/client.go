@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -32,7 +33,7 @@ var (
 	ErrResponseTooLarge = errors.New("TRON 节点响应超过大小限制")
 )
 
-// Config 是 SolidityNode HTTP 连接配置。
+// Config 是 TRON HTTP 连接配置。BaseURL 可按优先级提供逗号分隔的同网络端点。
 type Config struct {
 	BaseURL          string
 	Network          string
@@ -42,11 +43,12 @@ type Config struct {
 
 // Client 读取 TRON FullNode 或 SolidityNode HTTP 接口。
 type Client struct {
-	baseURL          *url.URL
+	baseURLs         []*url.URL
 	network          string
 	apiKey           string
 	maxResponseBytes int64
 	httpClient       *http.Client
+	preferred        atomic.Uint32
 }
 
 // Head 返回 FullNode 当前最新链头。
@@ -68,10 +70,8 @@ var _ tron.TokenBalanceReader = (*Client)(nil)
 
 // New 创建 SolidityNode HTTP 客户端。nil HTTP 客户端使用带超时的标准客户端。
 func New(config Config, httpClient *http.Client) (*Client, error) {
-	baseURL, err := url.Parse(strings.TrimSpace(config.BaseURL))
-	if err != nil || (baseURL.Scheme != "http" && baseURL.Scheme != "https") ||
-		baseURL.Host == "" || baseURL.User != nil || baseURL.RawQuery != "" || baseURL.Fragment != "" ||
-		strings.TrimSpace(config.Network) == "" || config.MaxResponseBytes < 0 {
+	baseURLs, err := parseBaseURLs(config.BaseURL)
+	if err != nil || strings.TrimSpace(config.Network) == "" || config.MaxResponseBytes < 0 {
 		return nil, ErrInvalidConfig
 	}
 	if httpClient == nil {
@@ -86,9 +86,8 @@ func New(config Config, httpClient *http.Client) (*Client, error) {
 	if maxResponseBytes == 0 {
 		maxResponseBytes = defaultMaxResponseBytes
 	}
-	baseURL.Path = strings.TrimRight(baseURL.Path, "/")
 	return &Client{
-		baseURL:          baseURL,
+		baseURLs:         baseURLs,
 		network:          strings.TrimSpace(config.Network),
 		apiKey:           config.APIKey,
 		maxResponseBytes: maxResponseBytes,
@@ -532,11 +531,39 @@ func (client *Client) post(ctx context.Context, endpoint string, payload, output
 	if err != nil {
 		return fmt.Errorf("编码 TRON 节点请求: %w", err)
 	}
-	target := *client.baseURL
+	start := int(client.preferred.Load()) % len(client.baseURLs)
+	failures := make([]error, 0, len(client.baseURLs))
+	for offset := range client.baseURLs {
+		index := (start + offset) % len(client.baseURLs)
+		responseBody, retryable, requestErr := client.postToEndpoint(ctx, client.baseURLs[index], endpoint, body)
+		if requestErr == nil {
+			if unmarshalErr := json.Unmarshal(responseBody, output); unmarshalErr == nil {
+				client.preferred.Store(uint32(index))
+				return nil
+			} else {
+				requestErr = fmt.Errorf("解析 TRON 节点响应: %w", errors.Join(ErrInvalidResponse, unmarshalErr))
+				retryable = false
+			}
+		}
+		failures = append(failures, fmt.Errorf("TRON 节点端点 %d: %w", index+1, requestErr))
+		if !retryable || ctx.Err() != nil {
+			return failures[len(failures)-1]
+		}
+	}
+	return fmt.Errorf("所有 TRON 节点端点均不可用: %w", errors.Join(failures...))
+}
+
+func (client *Client) postToEndpoint(
+	ctx context.Context,
+	baseURL *url.URL,
+	endpoint string,
+	body []byte,
+) ([]byte, bool, error) {
+	target := *baseURL
 	target.Path += endpoint
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("创建 TRON 节点请求: %w", err)
+		return nil, false, fmt.Errorf("创建 TRON 节点请求: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
@@ -545,29 +572,33 @@ func (client *Client) post(ctx context.Context, endpoint string, payload, output
 	}
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return fmt.Errorf("请求 TRON 节点: %w", err)
+		return nil, ctx.Err() == nil, fmt.Errorf("请求 TRON 节点: %w", err)
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, client.maxResponseBytes+1))
 	if err != nil {
-		return fmt.Errorf("读取 TRON 节点响应: %w", err)
+		return nil, ctx.Err() == nil, fmt.Errorf("读取 TRON 节点响应: %w", err)
 	}
 	if int64(len(responseBody)) > client.maxResponseBytes {
-		return ErrResponseTooLarge
+		return nil, true, ErrResponseTooLarge
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("TRON 节点 HTTP 状态 %d: %w", response.StatusCode, ErrInvalidResponse)
+		return nil, retryableHTTPStatus(response.StatusCode),
+			fmt.Errorf("TRON 节点 HTTP 状态 %d: %w", response.StatusCode, ErrInvalidResponse)
 	}
 	var nodeError struct {
 		Error string `json:"Error"`
 	}
-	if len(responseBody) == 0 || (json.Unmarshal(responseBody, &nodeError) == nil && nodeError.Error != "") {
-		return fmt.Errorf("TRON 节点拒绝请求: %s: %w", nodeError.Error, ErrInvalidResponse)
+	if len(responseBody) == 0 {
+		return nil, true, fmt.Errorf("TRON 节点返回空响应: %w", ErrInvalidResponse)
 	}
-	if err := json.Unmarshal(responseBody, output); err != nil {
-		return fmt.Errorf("解析 TRON 节点响应: %w", errors.Join(ErrInvalidResponse, err))
+	if json.Unmarshal(responseBody, &nodeError) == nil && nodeError.Error != "" {
+		return nil, false, fmt.Errorf("TRON 节点拒绝请求: %s: %w", nodeError.Error, ErrInvalidResponse)
 	}
-	return nil
+	if !json.Valid(responseBody) {
+		return nil, true, ErrInvalidResponse
+	}
+	return responseBody, false, nil
 }
 
 func normalizedHash(value string) (string, error) {

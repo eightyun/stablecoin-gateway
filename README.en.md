@@ -18,6 +18,7 @@ Implemented components:
 - Transactional Outbox foundation
 - Deterministic TRON simulator
 - SolidityNode finalized-block reader and TRC20 log decoder
+- Multi-endpoint TRON FullNode/SolidityNode failover for reads, transaction construction, and same-txID broadcast
 - Durable scan cursor with leases and fencing tokens
 - Standalone TRON indexer worker
 - Deposit addresses, deposit intents, and chain-event matching model
@@ -397,11 +398,13 @@ Configure the FullNode and SolidityNode endpoints, then start the payout executi
 
 ```bash
 export GATEWAY_TRON_NETWORK='tron-nile'
-export GATEWAY_PAYOUT_TRON_FULL_NODE_URL='https://nile.trongrid.io'
-export GATEWAY_PAYOUT_TRON_SOLIDITY_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_PAYOUT_TRON_FULL_NODE_URL='https://primary-full-node.example,https://backup-full-node.example'
+export GATEWAY_PAYOUT_TRON_SOLIDITY_NODE_URL='https://primary-solidity-node.example,https://backup-solidity-node.example'
 export GATEWAY_TRON_API_KEY='injected-by-your-secrets-manager'
 go run ./cmd/gateway-payout-execution-worker
 ```
+
+Every TRON node URL environment variable accepts either one URL or up to eight comma-separated endpoints in priority order. Connection errors, response-read failures, oversized responses, invalid JSON, HTTP 408/425/429, and 5xx responses fail over to the next endpoint; the last successful endpoint remains preferred. Deterministic 4xx responses and node-level business rejection do not trigger blind failover. Broadcast failover submits only the same immutable signed payload stored in PostgreSQL, so the txID cannot change. All endpoints must serve the same network and be trusted by the deployer because the same node API key is sent to each endpoint that is actually contacted.
 
 This configuration provides the testnet signing, broadcast, and confirmation path. On 2026-09-27, a fresh Nile-only wallet completed live test-asset checks: [`e7f6ee9…aef39`](https://nile.tronscan.org/#/transaction/e7f6ee9ba5f10f119454d8df0a33b633ca6915a31f2847b82a1d5d25859aef39) covered signer construction, signing, broadcast, and SolidityNode finalization; [`fa242e1b…cc82b`](https://nile.tronscan.org/#/transaction/fa242e1bdc988f926582b169944ddf6eeb64cac55c7e83e79d38e371385cc82b) covered Indexer ingestion of a real Transfer, Deposit Worker intent matching, double-entry posting, and creation of the `deposit.confirmed` Outbox event; and [`86283b5f…e9ac`](https://nile.tronscan.org/#/transaction/86283b5fb90fc9aaf01162aff936df9c2c2b5ad7a89856ee972d691e87f0e9ac) covered merchant API payout creation, atomic freezing, manual approval, a private-CA signer, broadcast, finalization, and ledger settlement. On 2026-10-12, [`6fd465a…073da648`](https://nile.tronscan.org/#/transaction/6fd465a762b3d48bd01f5a4c18e6b83322bece9b9045d5072d481aef073da648) completed a live 1,000 USDT sweep from a dedicated deposit address to the hot wallet, with finalized before-and-after snapshots matching the custody ledger. A later external `0.000001 USDT` dust transfer was identified by scoped reconciliation as an on-chain excess case and was not credited to any merchant ledger. The same test cycle also verified automatic failure and atomic fund release when a transaction safely expired without reaching the chain. This is functional testnet evidence rather than production acceptance; production deployments still need independent node failover and monitoring.
 
@@ -441,6 +444,7 @@ Only 2xx responses are successful. Delivery is at least once, so merchants must 
 
 - Nile now covers live deposit posting, a merchant-API-driven payout loop, a dedicated-address-to-hot-wallet sweep, safe-expiry recovery, and before-and-after custody reconciliation.
 - Automated recovery exercises cover payout and sweep worker crashes during broadcast and confirmation. A stale lease cannot advance state, the replacement worker reuses only the original signed transaction and txID, payout settlement and its terminal event happen once, and a sweep never changes merchant ledgers.
+- On 2026-10-13, a live read-only Nile preflight succeeded with a deliberately unreachable preferred endpoint and Nile as the backup. Local fault injection additionally covers same-txID broadcast failover after a primary-node 5xx and no failover for deterministic 4xx responses or business rejection.
 - Database disaster recovery now has a real `pg_dump`, isolated `pg_restore`, core-table row-count comparison, and read-only fund-integrity audit. A restored database passes only at the current clean migration version and with no critical fund finding.
 - Mainnet canarying starts only after sustained testnet operation, three-way reconciliation, monitoring and alerting, disaster-recovery exercises, and an external security audit pass.
 - Mainnet is never a general test environment. Every mainnet canary requires a defined loss limit, dual approval, and an emergency stop.

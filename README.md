@@ -18,6 +18,7 @@
 - Transactional Outbox 基础能力
 - TRON 确定性模拟器
 - SolidityNode 已固化区块读取与 TRC20 日志解析
+- TRON FullNode/SolidityNode 多端点故障切换，覆盖读取、交易构造和同 txID 广播
 - 带租约和栅栏令牌的持久化扫描游标
 - 独立 TRON 扫描 Worker
 - 充值地址、充值意图和链事件匹配模型
@@ -397,11 +398,13 @@ go run ./cmd/gateway-testnet-signer
 
 ```bash
 export GATEWAY_TRON_NETWORK='tron-nile'
-export GATEWAY_PAYOUT_TRON_FULL_NODE_URL='https://nile.trongrid.io'
-export GATEWAY_PAYOUT_TRON_SOLIDITY_NODE_URL='https://nile.trongrid.io'
+export GATEWAY_PAYOUT_TRON_FULL_NODE_URL='https://primary-full-node.example,https://backup-full-node.example'
+export GATEWAY_PAYOUT_TRON_SOLIDITY_NODE_URL='https://primary-solidity-node.example,https://backup-solidity-node.example'
 export GATEWAY_TRON_API_KEY='从密钥管理服务注入'
 go run ./cmd/gateway-payout-execution-worker
 ```
+
+所有 TRON 节点 URL 环境变量都兼容单 URL，也支持最多 8 个按优先级排列的逗号分隔端点。连接错误、读取失败、响应超限、无效 JSON、HTTP 408/425/429 或 5xx 会切换到备用节点，后续请求优先使用最近成功的节点；确定性 4xx 和节点业务拒绝不会盲目切换。广播故障切换只提交数据库中同一份不可变签名 Payload，因此 txID 不变。多个端点必须属于同一网络并由部署方信任，因为同一节点 API Key 会发送给实际访问的端点。
 
 上述配置已具备测试网签名、广播和确认链路。2026-09-27 已使用全新 Nile 专用钱包完成真实测试资产验收：[`e7f6ee9…aef39`](https://nile.tronscan.org/#/transaction/e7f6ee9ba5f10f119454d8df0a33b633ca6915a31f2847b82a1d5d25859aef39) 验证 signer 构造、签名、广播和 SolidityNode 固化确认；[`fa242e1b…cc82b`](https://nile.tronscan.org/#/transaction/fa242e1bdc988f926582b169944ddf6eeb64cac55c7e83e79d38e371385cc82b) 验证 Indexer 捕获真实 Transfer、Deposit Worker 匹配充值意图、双分录入账并生成 `deposit.confirmed` Outbox；[`86283b5f…e9ac`](https://nile.tronscan.org/#/transaction/86283b5fb90fc9aaf01162aff936df9c2c2b5ad7a89856ee972d691e87f0e9ac) 验证商户 API 创建出款、原子冻资、人工审批、私有 CA Signer、广播、固化确认和账本结算。2026-10-12 又通过 [`6fd465a…073da648`](https://nile.tronscan.org/#/transaction/6fd465a762b3d48bd01f5a4c18e6b83322bece9b9045d5072d481aef073da648) 完成了 1,000 USDT 从专用充值地址到热钱包的真实归集，并验证了归集前后固化快照与账本托管余额一致。归集后的外部 `0.000001 USDT` 尘埃转账也已被定向对账识别为链上长款工单，未自动计入商户账本。同轮还验证了交易安全过期且未上链时自动失败并原子解冻。以上只是功能性实测，不等同于生产验收；生产环境仍应为节点端点配置独立容灾与监控。
 
@@ -441,6 +444,7 @@ v1=HEX(HMAC_SHA256(secret, timestamp + "." + event_id + "." + raw_body))
 
 - 测试网：Nile 真实充值入账、商户 API 驱动的出款、专用充值地址到热钱包的归集均已完成，并验证了安全过期恢复和归集前后账实一致。
 - 自动故障恢复：PostgreSQL 集成演练已覆盖出款与归集在广播、确认阶段的 Worker 崩溃接管；旧租约不能推进状态，新 Worker 只复用原始签名交易与 txID，出款终态只过账并发送一次事件，归集不修改商户账本。
+- 节点容灾：2026-10-13 已以故意不可达的首选端点和 Nile 备用端点完成真实只读预检；本地故障注入另覆盖同 txID 广播在主节点 5xx 后切换，以及确定性 4xx/业务拒绝不切换。
 - 数据库灾备：已完成真实 `pg_dump`、隔离库 `pg_restore`、核心表行数核对和只读资金一致性审计；恢复库只有在当前迁移版本、无 dirty 状态且无关键资金问题时才通过。
 - 主网灰度：测试网持续运行、三角对账、监控告警、灾难恢复演练和外部安全审计全部通过后，才允许白名单与小额限额灰度。
 - 主网不作为普通测试环境；任何主网验证都必须有明确损失上限、双人审批和停止开关。
