@@ -2,6 +2,8 @@
 
 简体中文 | [English](README.en.md)
 
+[![CI](https://github.com/eightyun/stablecoin-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/eightyun/stablecoin-gateway/actions/workflows/ci.yml)
+
 [stablecoin-gateway](https://github.com/eightyun/stablecoin-gateway) 是一个面向商户的生产级开源稳定币支付系统，目标覆盖充值、出款、双分录账本、链上索引、商户回调、对账与异常恢复。
 
 首个稳定版本聚焦 USDT-TRC20，之后通过链适配接口扩展 EVM。x402 作为独立的 scheme/network 协议扩展，不依赖 EVM，可优先在 TRON Nile 验证。
@@ -53,6 +55,7 @@
 - 绑定来源地址、目标热钱包、固化快照和精确金额的归集前筛查；只有当前有效 allow 才创建计划
 - 基于固化钱包快照和完整入金来源证明的归集 Planner，以及带余额预检、隔离签名、原交易广播恢复和固化终态的执行链路
 - PostgreSQL 恢复库启用前的只读审计，覆盖迁移兼容性、账本/业务引用、钱包资产、开放工单、待处理任务和过期租约
+- GitHub Actions 自动验收，覆盖构建、单元测试、逐包隔离 PostgreSQL 集成测试、节点故障切换竞态压测和 Prometheus 规则校验
 
 尚未完成：外部法币/PSP 通道余额适配与对账、监控仪表盘，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
 

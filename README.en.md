@@ -2,6 +2,8 @@
 
 [简体中文](README.md) | English
 
+[![CI](https://github.com/eightyun/stablecoin-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/eightyun/stablecoin-gateway/actions/workflows/ci.yml)
+
 [stablecoin-gateway](https://github.com/eightyun/stablecoin-gateway) is a production-oriented, open-source stablecoin payment system for merchants. Its target scope includes deposits, payouts, double-entry accounting, blockchain indexing, merchant webhooks, reconciliation, and failure recovery.
 
 The first stable release focuses on USDT-TRC20, with EVM networks added later through chain adapters. x402 remains an independent scheme/network extension, does not depend on EVM, and can be validated on TRON Nile first.
@@ -53,6 +55,7 @@ Implemented components:
 - Pre-sweep screening bound to the source, hot-wallet destination, finalized snapshot, and exact amount; only a current allow can create a plan
 - A finalized-snapshot sweep planner with balance preflight, isolated signing, exact-transaction broadcast recovery, and finalized execution state
 - A read-only pre-activation audit for restored PostgreSQL databases covering migration compatibility, ledger/business references, wallet assets, open cases, pending work, and expired leases
+- GitHub Actions release gates covering builds, unit tests, per-package isolated PostgreSQL integration tests, race-enabled node-failover soak tests, and Prometheus rule validation
 
 Not yet implemented: external fiat/PSP provider balance adapters and reconciliation, monitoring dashboards, and a production KMS/HSM/MPC signing backend.
 

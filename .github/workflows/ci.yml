@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: 1.23.x
+
+jobs:
+  quality:
+    name: Build and unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      - name: Verify modules
+        run: go mod verify
+      - name: Check formatting
+        shell: bash
+        run: |
+          unformatted="$(git ls-files -z -- '*.go' | xargs -0 gofmt -l)"
+          if [[ -n "$unformatted" ]]; then
+            printf 'The following Go files are not formatted:\n%s\n' "$unformatted"
+            exit 1
+          fi
+      - name: Vet packages
+        run: go vet ./...
+      - name: Run unit tests
+        run: go test -count=1 ./...
+      - name: Build commands
+        run: go build ./cmd/...
+
+  integration:
+    name: PostgreSQL integration tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+        env:
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: gateway-ci-only
+          POSTGRES_DB: gateway_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gateway -d gateway_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGPASSWORD: gateway-ci-only
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      - name: Run integration packages in isolated databases
+        shell: bash
+        run: |
+          packages="$(
+            find internal -type f -name '*_test.go' -exec grep -l '^//go:build integration$' {} + \
+              | xargs -n1 dirname \
+              | sort -u
+          )"
+          if [[ -z "$packages" ]]; then
+            echo 'No integration test packages found'
+            exit 1
+          fi
+          while IFS= read -r package; do
+            echo "Testing ./${package}"
+            dropdb --if-exists --host=127.0.0.1 --username=gateway gateway_ci_package
+            createdb --host=127.0.0.1 --username=gateway gateway_ci_package
+            database_url='postgres://gateway:gateway-ci-only@127.0.0.1:5432/gateway_ci_package?sslmode=disable'
+            GATEWAY_DATABASE_URL="$database_url" go run ./cmd/gateway-migrate up
+            GATEWAY_TEST_DATABASE_URL="$database_url" go test -count=1 -tags=integration "./${package}"
+          done <<< "$packages"
+
+  node-failover-soak:
+    name: TRON node failover soak
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      - name: Run failover soak with race detection
+        run: >-
+          go test -count=1 -race -tags=soak ./internal/chain/tron/nodehttp
+          -run '^TestFailoverSoakUnderEndpointChurn$'
+
+  prometheus-rules:
+    name: Prometheus alert rules
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate alert rules
+        run: >-
+          docker run --rm --entrypoint=promtool
+          -v "$PWD/configs/prometheus:/work:ro"
+          prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
+          check rules /work/alerts.yml
