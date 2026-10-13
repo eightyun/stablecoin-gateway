@@ -591,8 +591,12 @@ func assertPayoutRejectedEvent(t *testing.T, pool *pgxpool.Pool, expected payout
 		t.Fatalf("解析出款拒绝事件: %v", err)
 	}
 	expected.Network = actual.Network
-	if status != "pending" || actual != expected || !strings.HasPrefix(actual.Network, "tron-nile-") {
-		t.Fatalf("出款拒绝事件 status=%s actual=%+v expected=%+v", status, actual, expected)
+	actualReviewedAt, expectedReviewedAt := actual.ReviewedAt, expected.ReviewedAt
+	actual.ReviewedAt, expected.ReviewedAt = time.Time{}, time.Time{}
+	if status != "pending" || actual != expected || !actualReviewedAt.Equal(expectedReviewedAt) ||
+		!strings.HasPrefix(actual.Network, "tron-nile-") {
+		t.Fatalf("出款拒绝事件 status=%s actual=%+v expected=%+v actual_reviewed_at=%s expected_reviewed_at=%s",
+			status, actual, expected, actualReviewedAt, expectedReviewedAt)
 	}
 	assertPayoutRejectedEventCount(t, pool, expected.PayoutID, 1)
 }
