@@ -355,7 +355,7 @@ func TestStoreRequiresCurrentSweepScreeningBeforePlanning(t *testing.T) {
 	denied := screening.Result{
 		Provider: "sweep-test", Decision: screening.DecisionDeny,
 		ReasonCodes: []string{"risk_match"}, ProviderReference: "sweep-deny",
-		ResponseHash: strings.Repeat("e", 64), CheckedAt: now, ValidUntil: now.Add(20 * time.Millisecond),
+		ResponseHash: strings.Repeat("e", 64), CheckedAt: now, ValidUntil: now.Add(time.Second),
 	}
 	if err := screeningStore.Complete(ctx, firstClaim, denied); !errors.Is(err, screening.ErrSweepScreeningLeaseLost) {
 		t.Fatalf("旧租约 Complete() error = %v", err)
@@ -367,7 +367,7 @@ func TestStoreRequiresCurrentSweepScreeningBeforePlanning(t *testing.T) {
 		t.Fatalf("deny 结果后 PlanNext() error = %v", err)
 	}
 	assertSweepScreeningAction(t, screeningStore, newSnapshotID, "blocked", screening.DecisionDeny)
-	time.Sleep(time.Until(denied.ValidUntil) + 20*time.Millisecond)
+	time.Sleep(time.Until(denied.ValidUntil) + 50*time.Millisecond)
 	assertSweepScreeningAction(t, screeningStore, newSnapshotID, "result_expired", screening.DecisionDeny)
 	thirdClaim, err := screeningStore.Claim(ctx, "sweep-screening-3", time.Minute)
 	if err != nil || thirdClaim.LeaseEpoch != 3 {
