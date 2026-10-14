@@ -59,8 +59,9 @@ Implemented components:
 - A finalized-snapshot sweep planner with balance preflight, isolated signing, exact-transaction broadcast recovery, and finalized execution state
 - A read-only pre-activation audit for restored PostgreSQL databases covering migration compatibility, ledger/business references, wallet assets, open cases, pending work, and expired leases
 - GitHub Actions release gates covering builds, unit tests, per-package isolated PostgreSQL integration tests, race-enabled node-failover soak tests, and Prometheus rule validation
+- Grafana operations dashboard for fund tasks, screening, reconciliation, indexing, workers, nodes, and optional signers, with CI query and snapshot-freshness validation
 
-Not yet implemented: external fiat/PSP balance adapters and reconciliation, monitoring dashboards, and HSM/MPC or hierarchical key routing for sweeping large address sets. The current AWS KMS signer targets a single payout hot wallet; mainnet deployment still requires a security audit and controlled pre-production validation.
+Not yet implemented: external fiat/PSP balance adapters and reconciliation, and HSM/MPC or hierarchical key routing for sweeping large address sets. The current AWS KMS signer targets a single payout hot wallet; mainnet deployment still requires a security audit and controlled pre-production validation.
 
 v0.1 requires neither an AWS account nor live AWS KMS acceptance. The KMS adapter and acceptance command are optional deployment capabilities; not using AWS does not block development or release. Core acceptance uses the existing automated tests and isolated testnet signer. Production deployers choose their signing backend and validate the implementation they actually use.
 
@@ -265,6 +266,20 @@ go run ./cmd/gateway-monitor
 The process periodically captures a repeatable-read PostgreSQL snapshot. Prometheus scrapes in-memory gauges and therefore does not query the database at scrape frequency. Metrics cover open reconciliation cases, payout status and oldest creation time, inbound/outbound/pre-sweep screening backlog and risk decisions, expired sweep-screening leases and results, Outbox backlog and dead letters, indexer cursor activity, and the latest reconciliation and wallet-snapshot timestamps. They are observational only and never mutate ledger or business state.
 
 Load [`configs/prometheus/alerts.yml`](configs/prometheus/alerts.yml) into Prometheus. The process-down rule assumes the scrape job is named `stablecoin-gateway-monitor`. The payout, node-switching, cursor, reconciliation, and wallet-snapshot thresholds are safe starting points and must be tuned to chain finality, scheduling frequency, and production SLAs. Cursor staleness currently detects stopped indexer activity; exact chain-head lag still requires later node-height sampling.
+
+Import [`configs/grafana/dashboards/stablecoin-gateway.json`](configs/grafana/dashboards/stablecoin-gateway.json) into Grafana using the Classic JSON model; it uses no third-party panel plugins. Configure Prometheus scrapes for the business monitor and workers, then import the file and select your Prometheus data source. `Business job` defaults to `stablecoin-gateway-monitor`, `Business instance` selects one instance, and `Process jobs` supports multiple selections.
+
+The 26 panels cover sampling health, payout/sweep/Outbox counts and ages, three screening directions, cursor activity, reconciliation and wallet-snapshot freshness, worker throughput and failures, node switching, and optional signer results and latency. Business snapshots use one monitor instance to avoid duplicate counts. They are hidden when scraping fails, no successful sample exists, or the sample exceeds `Max sample age` (120 seconds by default). NO DATA is not a health signal; check scrape status and sample age first. Zero timestamps are excluded from age calculations. Cursor inactivity is not chain-head lag, and worker throughput is not payment volume. Signer panels may remain empty when no signer metrics are enabled; AWS is not required.
+
+For automatic loading, mount [`configs/grafana/provisioning/dashboards/stablecoin-gateway.yml`](configs/grafana/provisioning/dashboards/stablecoin-gateway.yml) under Grafana's `/etc/grafana/provisioning/dashboards/`, and mount `configs/grafana/dashboards/` at `/var/lib/grafana/dashboards/stablecoin-gateway/`. Operators configure the Prometheus data source separately. Provisioning updates dashboard UID `stablecoin-gateway-ops`; avoid collisions with existing dashboards using that UID.
+
+Local checks and CI use the same command, requiring `jq` and Docker:
+
+```bash
+bash scripts/check-grafana-queries.sh
+```
+
+It extracts all 28 dashboard queries for validation by a pinned `promtool`, then verifies stale, unreachable, unsampled, and zero-timestamp behavior. A Go contract test also checks that every referenced project metric is exported by the actual collectors.
 
 ## Address Screening
 

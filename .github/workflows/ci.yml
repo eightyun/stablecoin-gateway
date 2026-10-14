@@ -126,3 +126,5 @@ jobs:
           -v "$PWD/configs/prometheus:/work:ro"
           prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
           check rules /work/alerts.yml
+      - name: Validate Grafana PromQL queries
+        run: bash scripts/check-grafana-queries.sh

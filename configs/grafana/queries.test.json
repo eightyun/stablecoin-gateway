@@ -1,0 +1,49 @@
+{
+  "rule_files": ["/work/queries.json"],
+  "evaluation_interval": "1m",
+  "tests": [
+    {
+      "interval": "1m",
+      "input_series": [
+        {"series": "up{job=\"stablecoin-gateway-monitor\",instance=\"fresh\"}", "values": "1+0x10"},
+        {"series": "up{job=\"stablecoin-gateway-monitor\",instance=\"stale\"}", "values": "1+0x10"},
+        {"series": "up{job=\"stablecoin-gateway-monitor\",instance=\"down\"}", "values": "1+0x3 0+0x7"},
+        {"series": "up{job=\"stablecoin-gateway-monitor\",instance=\"unsampled\"}", "values": "1+0x10"},
+        {"series": "stablecoin_gateway_worker_last_success_timestamp_seconds{job=\"stablecoin-gateway-monitor\",instance=\"fresh\",worker=\"business-monitor\"}", "values": "1+60x10"},
+        {"series": "stablecoin_gateway_worker_last_success_timestamp_seconds{job=\"stablecoin-gateway-monitor\",instance=\"stale\",worker=\"business-monitor\"}", "values": "1+60x3 181+0x7"},
+        {"series": "stablecoin_gateway_worker_last_success_timestamp_seconds{job=\"stablecoin-gateway-monitor\",instance=\"down\",worker=\"business-monitor\"}", "values": "1+60x10"},
+        {"series": "stablecoin_gateway_business_payouts{job=\"stablecoin-gateway-monitor\",instance=\"fresh\",status=\"confirming\"}", "values": "3+0x10"},
+        {"series": "stablecoin_gateway_business_payouts{job=\"stablecoin-gateway-monitor\",instance=\"stale\",status=\"confirming\"}", "values": "5+0x10"},
+        {"series": "stablecoin_gateway_business_payouts{job=\"stablecoin-gateway-monitor\",instance=\"down\",status=\"confirming\"}", "values": "7+0x10"},
+        {"series": "stablecoin_gateway_business_payouts{job=\"stablecoin-gateway-monitor\",instance=\"unsampled\",status=\"confirming\"}", "values": "9+0x10"},
+        {"series": "stablecoin_gateway_business_payout_oldest_created_timestamp_seconds{job=\"stablecoin-gateway-monitor\",instance=\"fresh\",status=\"confirming\"}", "values": "60+0x10"},
+        {"series": "stablecoin_gateway_business_payout_oldest_created_timestamp_seconds{job=\"stablecoin-gateway-monitor\",instance=\"fresh\",status=\"approved\"}", "values": "0+0x10"}
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "gateway_dashboard_panel_6_A",
+          "eval_time": "3m",
+          "exp_samples": [
+            {"labels": "gateway_dashboard_panel_6_A{job=\"stablecoin-gateway-monitor\",instance=\"fresh\",status=\"confirming\"}", "value": 3},
+            {"labels": "gateway_dashboard_panel_6_A{job=\"stablecoin-gateway-monitor\",instance=\"stale\",status=\"confirming\"}", "value": 5},
+            {"labels": "gateway_dashboard_panel_6_A{job=\"stablecoin-gateway-monitor\",instance=\"down\",status=\"confirming\"}", "value": 7}
+          ]
+        },
+        {
+          "expr": "gateway_dashboard_panel_6_A",
+          "eval_time": "6m",
+          "exp_samples": [
+            {"labels": "gateway_dashboard_panel_6_A{job=\"stablecoin-gateway-monitor\",instance=\"fresh\",status=\"confirming\"}", "value": 3}
+          ]
+        },
+        {
+          "expr": "gateway_dashboard_panel_9_A",
+          "eval_time": "6m",
+          "exp_samples": [
+            {"labels": "gateway_dashboard_panel_9_A{job=\"stablecoin-gateway-monitor\",instance=\"fresh\",status=\"confirming\"}", "value": 300}
+          ]
+        }
+      ]
+    }
+  ]
+}

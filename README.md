@@ -59,8 +59,9 @@
 - 基于固化钱包快照和完整入金来源证明的归集 Planner，以及带余额预检、隔离签名、原交易广播恢复和固化终态的执行链路
 - PostgreSQL 恢复库启用前的只读审计，覆盖迁移兼容性、账本/业务引用、钱包资产、开放工单、待处理任务和过期租约
 - GitHub Actions 自动验收，覆盖构建、单元测试、逐包隔离 PostgreSQL 集成测试、节点故障切换竞态压测和 Prometheus 规则校验
+- Grafana 运营仪表盘，覆盖资金任务、筛查、对账、索引、Worker、节点与可选 signer；CI 校验查询及快照新鲜度行为
 
-尚未完成：外部法币/PSP 通道余额适配与对账、监控仪表盘，以及面向大量充值地址归集的 HSM/MPC/分层密钥路由。当前 AWS KMS signer 适合单热钱包出款；主网上线仍需安全审计和受控预生产验证。
+尚未完成：外部法币/PSP 通道余额适配与对账，以及面向大量充值地址归集的 HSM/MPC/分层密钥路由。当前 AWS KMS signer 适合单热钱包出款；主网上线仍需安全审计和受控预生产验证。
 
 v0.1 不要求 AWS 账号或真实 AWS KMS 验收。KMS 适配器和验收命令是可选部署能力，未使用 AWS 不阻塞首版开发与发布；核心验收使用现有自动测试和隔离测试网 signer。生产部署的签名后端由部署方选择，并验证实际采用的实现。
 
@@ -265,6 +266,20 @@ go run ./cmd/gateway-monitor
 该进程在 PostgreSQL 可重复读事务内周期采集快照，Prometheus 抓取只读取内存 Gauge，不会按抓取频率查询数据库。它暴露未关闭对账工单、出款状态与最早创建时间、入金/出款/归集筛查积压和风险决策、归集筛查失效租约与过期结果、Outbox 积压与死信、索引游标活动、最近对账和钱包快照时间。指标只用于监控，不会自动改账或改变业务状态。
 
 可直接加载 [`configs/prometheus/alerts.yml`](configs/prometheus/alerts.yml)；其中进程存活规则约定 Prometheus job 名为 `stablecoin-gateway-monitor`。出款等待、节点切换、索引停滞、日终对账和钱包快照阈值是安全起点，上线前必须按节点固化速度、任务调度频率和业务 SLA 调整。当前索引告警检测游标是否停止活动，精确的链头高度差仍需在后续节点高度采样中补充。
+
+Grafana 可导入 [`configs/grafana/dashboards/stablecoin-gateway.json`](configs/grafana/dashboards/stablecoin-gateway.json)，使用 Classic JSON 格式，无第三方面板插件。先让 Prometheus 抓取业务监控和各 Worker，再在 Grafana 导入文件并选择现有 Prometheus 数据源；顶部 `业务 job` 默认是 `stablecoin-gateway-monitor`，`业务实例` 必须选择一个具体实例，`进程 job` 支持多选。
+
+仪表盘提供 26 个面板，覆盖监控采样、出款/归集/Outbox 数量与等待年龄、三类筛查、索引活动、对账与钱包快照、Worker 处理和故障、节点切换，以及可选 signer 结果和耗时。业务快照只使用选定实例，避免多个监控副本重复计数；抓取失败、尚无成功采样或采样超过 `最大采样年龄`（默认 120 秒）时隐藏业务快照。`NO DATA` 不表示正常；先检查抓取和采样年龄。零时间戳不计算等待时间；索引活动年龄不是链头高度差，Worker 处理速度不是支付交易量。未启用 signer 时相关面板可以保持无数据，无需 AWS。
+
+需要自动加载时，把 [`configs/grafana/provisioning/dashboards/stablecoin-gateway.yml`](configs/grafana/provisioning/dashboards/stablecoin-gateway.yml) 挂载到 Grafana 的 `/etc/grafana/provisioning/dashboards/`，把 `configs/grafana/dashboards/` 挂载到 `/var/lib/grafana/dashboards/stablecoin-gateway/`；Prometheus 数据源仍由部署方配置。仪表盘 UID 为 `stablecoin-gateway-ops`，provisioning 会更新该 UID 的面板，避免与已有同 UID 仪表盘冲突。
+
+本地校验和 CI 复用同一命令（需要 `jq` 与 Docker）：
+
+```bash
+bash scripts/check-grafana-queries.sh
+```
+
+该检查从仪表盘提取全部 28 条查询，由固定版本 `promtool` 校验，并验证过期、失联、未采样和零时间戳行为；Go 契约测试还会核对面板引用的指标确实由项目 Collector 导出。
 
 ## 地址筛查
 
