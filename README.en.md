@@ -62,6 +62,8 @@ Implemented components:
 
 Not yet implemented: external fiat/PSP balance adapters and reconciliation, monitoring dashboards, and HSM/MPC or hierarchical key routing for sweeping large address sets. The current AWS KMS signer targets a single payout hot wallet; mainnet deployment still requires a security audit and controlled pre-production validation.
 
+v0.1 requires neither an AWS account nor live AWS KMS acceptance. The KMS adapter and acceptance command are optional deployment capabilities; not using AWS does not block development or release. Core acceptance uses the existing automated tests and isolated testnet signer. Production deployers choose their signing backend and validate the implementation they actually use.
+
 ## Local Development
 
 Requirements:
@@ -427,7 +429,7 @@ The KMS signer uses `GATEWAY_OBSERVABILITY_ADDR` (default `127.0.0.1:9090`) for 
 
 `stablecoin_gateway_signer_requests_total{operation,result}` and `stablecoin_gateway_signer_request_duration_seconds{operation}` cover HTTP processing, including authorization, idempotency lookup, construction, signing, and persistence. Logs contain only bounded result categories, authenticated request UUIDs, successful transaction IDs, and durations; operators must collect and retain them. Immutable successful results remain in `signer_requests`; failed-attempt logs are not a separate durable audit table. `GATEWAY_KMS_SIGNER_REQUEST_TIMEOUT` defaults to `25s` and is capped at `1m`. A timeout returns 503 and cancels downstream contexts; callers must reuse the same request UUID when retrying.
 
-In addition to `GATEWAY_KMS_SIGNER_ALLOW_MAINNET=true`, a mainnet deployment should grant IAM only `kms:GetPublicKey` and `kms:Sign` on the selected key, limit the runtime database role to the required `signer_requests` access, and isolate the signer network with mTLS or workload identity. One process binds one KMS key and source address, which is suitable for hot-wallet payouts. Sweeping a large deposit-address set requires a later HSM/MPC backend or an audited multi-key router.
+For deployments choosing AWS KMS, in addition to `GATEWAY_KMS_SIGNER_ALLOW_MAINNET=true`, a mainnet deployment should grant IAM only `kms:GetPublicKey` and `kms:Sign` on the selected key, limit the runtime database role to the required `signer_requests` access, and isolate the signer network with mTLS or workload identity. One process binds one KMS key and source address, which is suitable for hot-wallet payouts. Sweeping a large deposit-address set requires a later HSM/MPC backend or an audited multi-key router.
 
 Validate a real KMS key in the target deployment using `GATEWAY_KMS_SIGNER_AWS_REGION`, `GATEWAY_KMS_SIGNER_AWS_KEY_ID`, and the independently registered `GATEWAY_KMS_SIGNER_OWNER_ADDRESS`. Provide workload identity through the AWS default credential chain:
 
@@ -441,7 +443,7 @@ go run ./cmd/gateway-kms-acceptance --sign --timeout 30s
 
 Use `--region`, `--key-id`, or `--expected-address` to override configuration; the total deadline is capped at `1m`. The `--sign` digest comes from a fixed acceptance domain and system randomness. The command accepts no arbitrary digest or transaction input and constructs or broadcasts no payment. Output contains only the mode, an address SHA-256 fingerprint, binding/verification results, and a UTC timestamp. Raw cloud errors, ARNs, addresses, signatures, and credentials are not printed. `signature_verified=false` in the default public-key mode means signing was not checked; only `signature_verified=true` in signature mode confirms that the actual signing round trip succeeded.
 
-The command needs no database, TLS service, or wallet funds. Passing it does not validate HTTP authorization, idempotent recovery, or on-chain payouts. Repository tests use a local AWS protocol simulator; real cloud acceptance still needs the configured target key and identity, followed by execution and report retention.
+The command needs no database, TLS service, or wallet funds. Passing it does not validate HTTP authorization, idempotent recovery, or on-chain payouts. Repository tests use a local AWS protocol simulator. Only deployments choosing AWS KMS need to configure the target key and identity, run live cloud acceptance, and retain the report; this is not a v0.1 release gate.
 
 Configure the FullNode and SolidityNode endpoints, then start the payout execution worker:
 
@@ -547,7 +549,7 @@ The indexer reads finalized blocks only. It does not hold private keys or broadc
 ## Security Boundary
 
 - Application services must never store or log plaintext private keys.
-- The repository's file-key signer is testnet-only; production hot-wallet signing uses the independent AWS KMS signer, while multi-address sweeps still require HSM/MPC or an audited key router.
+- The repository's file-key signer is testnet-only; production signing uses the independent remote-signer interface with the deployer's chosen backend. AWS KMS is optional, and multi-address sweeps still require an audited key router.
 - Mainnet capabilities must be explicitly enabled and pass a release checklist.
 - Deployers are responsible for address screening, KYC, AML, and licensing obligations in their jurisdictions.
 - Do not process real funds before completing a security audit, disaster-recovery exercises, and reconciliation acceptance tests.
