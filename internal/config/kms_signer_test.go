@@ -33,17 +33,17 @@ func TestLoadKMSSignerAllowsTestnetWithoutMainnetOptIn(t *testing.T) {
 func setKMSSignerEnv(t *testing.T) {
 	t.Helper()
 	values := map[string]string{
-		"GATEWAY_KMS_SIGNER_DATABASE_URL":       "postgres://gateway:secret@db/gateway?sslmode=require",
-		"GATEWAY_KMS_SIGNER_TLS_CERT_FILE":      "/run/secrets/tls.crt",
-		"GATEWAY_KMS_SIGNER_TLS_KEY_FILE":       "/run/secrets/tls.key",
-		"GATEWAY_KMS_SIGNER_BEARER_TOKEN":       "secret-token",
-		"GATEWAY_KMS_SIGNER_NETWORK":            "tron-nile",
-		"GATEWAY_KMS_SIGNER_FULL_NODE_URL":      "https://nile.example",
-		"GATEWAY_KMS_SIGNER_OWNER_ADDRESS":      "TMVQGm1qAQYVdetCeGRRkTWYYrLXuHK2HC",
-		"GATEWAY_KMS_SIGNER_CONTRACTS":          "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf,TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf",
-		"GATEWAY_KMS_SIGNER_MAX_AMOUNT":         "1000000",
-		"GATEWAY_KMS_SIGNER_AWS_REGION":         "ap-southeast-1",
-		"GATEWAY_KMS_SIGNER_AWS_KEY_ID":         "alias/gateway-tron",
+		"GATEWAY_KMS_SIGNER_DATABASE_URL":  "postgres://gateway:secret@db/gateway?sslmode=require",
+		"GATEWAY_KMS_SIGNER_TLS_CERT_FILE": "/run/secrets/tls.crt",
+		"GATEWAY_KMS_SIGNER_TLS_KEY_FILE":  "/run/secrets/tls.key",
+		"GATEWAY_KMS_SIGNER_BEARER_TOKEN":  "secret-token",
+		"GATEWAY_KMS_SIGNER_NETWORK":       "tron-nile",
+		"GATEWAY_KMS_SIGNER_FULL_NODE_URL": "https://nile.example",
+		"GATEWAY_KMS_SIGNER_OWNER_ADDRESS": "TMVQGm1qAQYVdetCeGRRkTWYYrLXuHK2HC",
+		"GATEWAY_KMS_SIGNER_CONTRACTS":     "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf,TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf",
+		"GATEWAY_KMS_SIGNER_MAX_AMOUNT":    "1000000",
+		"GATEWAY_KMS_SIGNER_AWS_REGION":    "ap-southeast-1",
+		"GATEWAY_KMS_SIGNER_AWS_KEY_ID":    "alias/gateway-tron",
 	}
 	for name, value := range values {
 		t.Setenv(name, value)
