@@ -65,7 +65,7 @@ type keyStub struct {
 }
 
 func (key *keyStub) Address() string { return testOwner }
-func (key *keyStub) SignDigest(digest []byte) ([]byte, error) {
+func (key *keyStub) SignDigest(_ context.Context, digest []byte) ([]byte, error) {
 	key.calls++
 	privateKeyBytes := make([]byte, 32)
 	privateKeyBytes[31] = 1
@@ -167,6 +167,24 @@ func TestServiceRejectsIdempotencyConflictAndPolicyViolation(t *testing.T) {
 	request.ContractAddress = testDestination
 	if _, err := service.SignTransfer(context.Background(), request); !errors.Is(err, ErrPolicyDenied) {
 		t.Fatalf("非白名单 error = %v", err)
+	}
+}
+
+func TestTestnetServiceRejectsMainnet(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewFileStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewService(ServiceConfig{
+		Network: "tron-mainnet", OwnerAddress: testOwner, AllowedContracts: []string{testContract},
+		MaxAmount: "2000000", MaxFeeLimit: 100_000_000, MaxTransactionLifetime: 10 * time.Minute,
+	}, &builderStub{}, &keyStub{}, store)
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("NewService(mainnet) error = %v", err)
 	}
 }
 

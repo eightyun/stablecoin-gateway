@@ -2,6 +2,7 @@
 package signer
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
@@ -23,7 +24,7 @@ var (
 // DigestSigner 对已经校验的 32 字节交易摘要签名。
 type DigestSigner interface {
 	Address() string
-	SignDigest([]byte) ([]byte, error)
+	SignDigest(context.Context, []byte) ([]byte, error)
 }
 
 // FileKey 是仅供测试网独立 signer 使用的软件密钥。
@@ -83,7 +84,7 @@ func (key *FileKey) Address() string {
 }
 
 // SignDigest 返回 TRON 规范的 r || s || v，其中 v 为 0 或 1。
-func (key *FileKey) SignDigest(digest []byte) ([]byte, error) {
+func (key *FileKey) SignDigest(_ context.Context, digest []byte) ([]byte, error) {
 	if key == nil || key.privateKey == nil || len(digest) != 32 {
 		return nil, ErrInvalidDigest
 	}

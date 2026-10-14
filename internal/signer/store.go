@@ -57,7 +57,7 @@ func (store *FileStore) Resolve(
 	requestHash string,
 	create func() (tron.SignedTransaction, error),
 ) (tron.SignedTransaction, error) {
-	if store == nil || !identity.ValidUUID(requestID) || len(requestHash) != 64 || create == nil {
+	if store == nil || !identity.ValidUUID(requestID) || !validRequestHash(requestHash) || create == nil {
 		return tron.SignedTransaction{}, ErrInvalidStore
 	}
 	store.mu.Lock()
@@ -74,8 +74,8 @@ func (store *FileStore) Resolve(
 	if err != nil {
 		return tron.SignedTransaction{}, err
 	}
-	if err := tron.ValidateSignedTransaction(transaction); err != nil {
-		return tron.SignedTransaction{}, ErrInvalidStore
+	if err := validateStoredTransaction(transaction); err != nil {
+		return tron.SignedTransaction{}, err
 	}
 	record, err := json.Marshal(storedRecord{
 		RequestHash: requestHash, TransactionID: transaction.ID,
@@ -159,8 +159,8 @@ func (store *FileStore) load(path string, requestHash string) (tron.SignedTransa
 	transaction := tron.SignedTransaction{
 		ID: record.TransactionID, Payload: bytes.Clone(record.SignedTransaction),
 	}
-	if err := tron.ValidateSignedTransaction(transaction); err != nil {
-		return tron.SignedTransaction{}, false, ErrInvalidStore
+	if err := validateStoredTransaction(transaction); err != nil {
+		return tron.SignedTransaction{}, false, err
 	}
 	return transaction, true, nil
 }

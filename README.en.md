@@ -43,6 +43,7 @@ Implemented components:
 - Atomic settlement on success and atomic fund release on safe failure or expiry
 - Read-only TRON testnet preflight and a mainnet broadcast safety switch that is off by default
 - Isolated Nile/Shasta testnet signer with contract/amount policy and durable replay protection
+- Production signer backed by a non-exportable AWS KMS secp256k1 key and cross-instance PostgreSQL idempotency
 - Live Nile USDT validation covering deposit posting plus merchant-API-driven payout, signing, broadcast, finalized settlement, and safe expiry recovery
 - Separate available and frozen balance reporting
 - Repeatable-read reconciliation of ledger references, amounts, debit/credit direction, and account ownership, with deduplicated cases and audited resolution
@@ -57,7 +58,7 @@ Implemented components:
 - A read-only pre-activation audit for restored PostgreSQL databases covering migration compatibility, ledger/business references, wallet assets, open cases, pending work, and expired leases
 - GitHub Actions release gates covering builds, unit tests, per-package isolated PostgreSQL integration tests, race-enabled node-failover soak tests, and Prometheus rule validation
 
-Not yet implemented: external fiat/PSP provider balance adapters and reconciliation, monitoring dashboards, and a production KMS/HSM/MPC signing backend.
+Not yet implemented: external fiat/PSP balance adapters and reconciliation, monitoring dashboards, and HSM/MPC or hierarchical key routing for sweeping large address sets. The current AWS KMS signer targets a single payout hot wallet; mainnet deployment still requires a security audit and controlled pre-production validation.
 
 ## Local Development
 
@@ -399,6 +400,29 @@ go run ./cmd/gateway-testnet-signer
 
 The signer requires HTTPS and bearer authentication and verifies that the key matches the configured owner before serving. It signs only one allowlisted TRC20 `transfer` after revalidating the network, contract, destination, amount, fee, and lifetime. A UUID-bound result is durably persisted before the response is returned. The current file store is single-instance; replace it with a consistency-enforced shared store before running multiple signer replicas.
 
+Use `gateway-kms-signer` for a production hot wallet. Its AWS KMS asymmetric key must use `ECC_SECG_P256K1` with `SIGN_VERIFY`, keeping the private key non-exportable. The signer sends only the 32-byte transaction digest to KMS with `ECDSA_SHA_256` and `DIGEST`. It converts the returned DER signature to TRON `r || s || v`, normalizes low-S, and recovers the public key to bind the signature to the configured owner address. It persists the result in PostgreSQL before responding, so one request UUID creates only one result across replicas.
+
+Apply migrations first, then start the service through the AWS default credential chain, preferably with workload identity:
+
+```bash
+export GATEWAY_KMS_SIGNER_DATABASE_URL='postgres://signer_runtime:password@db/signer?sslmode=verify-full'
+export GATEWAY_KMS_SIGNER_TLS_CERT_FILE='/run/secrets/signer-tls.crt'
+export GATEWAY_KMS_SIGNER_TLS_KEY_FILE='/run/secrets/signer-tls.key'
+export GATEWAY_KMS_SIGNER_BEARER_TOKEN='high-entropy-token-from-a-secret-manager'
+export GATEWAY_KMS_SIGNER_NETWORK='tron-mainnet'
+export GATEWAY_KMS_SIGNER_ALLOW_MAINNET='true'
+export GATEWAY_KMS_SIGNER_FULL_NODE_URL='https://primary-full-node.example,https://backup-full-node.example'
+export GATEWAY_KMS_SIGNER_OWNER_ADDRESS='TRON-hot-wallet-address-derived-from-the-KMS-public-key'
+export GATEWAY_KMS_SIGNER_CONTRACTS='allowlisted-TRC20-contract-addresses'
+export GATEWAY_KMS_SIGNER_MAX_AMOUNT='maximum-atomic-units-per-transfer'
+export GATEWAY_KMS_SIGNER_AWS_REGION='ap-southeast-1'
+export GATEWAY_KMS_SIGNER_AWS_KEY_ID='alias/stablecoin-gateway-tron'
+
+go run ./cmd/gateway-kms-signer
+```
+
+In addition to `GATEWAY_KMS_SIGNER_ALLOW_MAINNET=true`, a mainnet deployment should grant IAM only `kms:GetPublicKey` and `kms:Sign` on the selected key, limit the runtime database role to the required `signer_requests` access, and isolate the signer network with mTLS or workload identity. One process binds one KMS key and source address, which is suitable for hot-wallet payouts. Sweeping a large deposit-address set requires a later HSM/MPC backend or an audited multi-key router.
+
 Configure the FullNode and SolidityNode endpoints, then start the payout execution worker:
 
 ```bash
@@ -503,7 +527,7 @@ The indexer reads finalized blocks only. It does not hold private keys or broadc
 ## Security Boundary
 
 - Application services must never store or log plaintext private keys.
-- The repository's file-key signer is testnet-only; production signing must use an independent KMS/HSM/MPC backend.
+- The repository's file-key signer is testnet-only; production hot-wallet signing uses the independent AWS KMS signer, while multi-address sweeps still require HSM/MPC or an audited key router.
 - Mainnet capabilities must be explicitly enabled and pass a release checklist.
 - Deployers are responsible for address screening, KYC, AML, and licensing obligations in their jurisdictions.
 - Do not process real funds before completing a security audit, disaster-recovery exercises, and reconciliation acceptance tests.

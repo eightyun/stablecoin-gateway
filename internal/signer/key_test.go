@@ -1,6 +1,7 @@
 package signer
 
 import (
+	"context"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -22,7 +23,7 @@ func TestFileKeyLoadsAndSigns(t *testing.T) {
 		t.Fatalf("Address() = %s", key.Address())
 	}
 	digest, _ := hex.DecodeString(strings.Repeat("01", 32))
-	signature, err := key.SignDigest(digest)
+	signature, err := key.SignDigest(context.Background(), digest)
 	if err != nil || len(signature) != 65 || signature[64] > 1 {
 		t.Fatalf("SignDigest() = %x, %v", signature, err)
 	}

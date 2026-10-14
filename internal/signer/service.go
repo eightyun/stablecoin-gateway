@@ -15,10 +15,15 @@ import (
 )
 
 var (
-	ErrInvalidConfig  = errors.New("测试网 signer 配置无效")
-	ErrInvalidRequest = errors.New("测试网 signer 请求无效")
-	ErrPolicyDenied   = errors.New("测试网 signer 策略拒绝")
+	ErrInvalidConfig  = errors.New("signer 配置无效")
+	ErrInvalidRequest = errors.New("signer 请求无效")
+	ErrPolicyDenied   = errors.New("signer 策略拒绝")
 )
+
+// IdempotencyStore 按请求标识持久化唯一签名结果。
+type IdempotencyStore interface {
+	Resolve(context.Context, string, string, func() (tron.SignedTransaction, error)) (tron.SignedTransaction, error)
+}
 
 // ServiceConfig 定义 signer 自身不可由调用方覆盖的资金安全边界。
 type ServiceConfig struct {
@@ -34,7 +39,7 @@ type ServiceConfig struct {
 type Service struct {
 	builder                tron.TransferBuilder
 	key                    DigestSigner
-	store                  *FileStore
+	store                  IdempotencyStore
 	network                string
 	ownerAddress           string
 	allowedContracts       map[string]struct{}
@@ -49,7 +54,30 @@ var _ tron.SweepSigner = (*Service)(nil)
 
 // NewService 创建测试网签名服务。文件密钥后端明确拒绝主网。
 func NewService(config ServiceConfig, builder tron.TransferBuilder, key DigestSigner, store *FileStore) (*Service, error) {
-	if config.Network != "tron-nile" && config.Network != "tron-shasta" || builder == nil || key == nil || store == nil ||
+	if config.Network != "tron-nile" && config.Network != "tron-shasta" {
+		return nil, ErrInvalidConfig
+	}
+	return newService(config, builder, key, store)
+}
+
+// NewProductionService 创建使用不可导出密钥和 PostgreSQL 幂等存储的生产 signer。
+func NewProductionService(
+	config ServiceConfig,
+	builder tron.TransferBuilder,
+	key DigestSigner,
+	store *PostgresStore,
+) (*Service, error) {
+	if config.Network != "tron-mainnet" && config.Network != "tron-nile" && config.Network != "tron-shasta" {
+		return nil, ErrInvalidConfig
+	}
+	if store == nil || store.db == nil {
+		return nil, ErrInvalidConfig
+	}
+	return newService(config, builder, key, store)
+}
+
+func newService(config ServiceConfig, builder tron.TransferBuilder, key DigestSigner, store IdempotencyStore) (*Service, error) {
+	if builder == nil || key == nil || store == nil ||
 		config.MaxFeeLimit <= 0 || config.MaxTransactionLifetime <= 15*time.Second {
 		return nil, ErrInvalidConfig
 	}
@@ -134,7 +162,7 @@ func (service *Service) buildAndSign(ctx context.Context, request tron.TransferS
 	if hex.EncodeToString(digest[:]) != unsigned.ID {
 		return tron.SignedTransaction{}, ErrInvalidRequest
 	}
-	signature, err := service.key.SignDigest(digest[:])
+	signature, err := service.key.SignDigest(ctx, digest[:])
 	if err != nil {
 		return tron.SignedTransaction{}, err
 	}

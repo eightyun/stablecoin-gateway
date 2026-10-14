@@ -43,6 +43,7 @@
 - 成功出款原子结算、失败或安全过期出款原子解冻
 - TRON 测试网只读预检与默认关闭的主网广播安全开关
 - 独立的 Nile/Shasta 测试网签名服务、合约/金额白名单与持久化防重复签名
+- 基于 AWS KMS 不可导出 secp256k1 密钥的生产 signer，以及 PostgreSQL 跨实例幂等签名存储
 - Nile 真实 USDT 的充值入账，以及商户 API 驱动的出款、签名、广播、固化结算与安全过期恢复验证
 - 可用余额与冻结余额分离查询
 - 可重复读快照下的账本/业务引用与金额、借贷方向、账户归属对账，以及差异工单去重和关闭审计
@@ -57,7 +58,7 @@
 - PostgreSQL 恢复库启用前的只读审计，覆盖迁移兼容性、账本/业务引用、钱包资产、开放工单、待处理任务和过期租约
 - GitHub Actions 自动验收，覆盖构建、单元测试、逐包隔离 PostgreSQL 集成测试、节点故障切换竞态压测和 Prometheus 规则校验
 
-尚未完成：外部法币/PSP 通道余额适配与对账、监控仪表盘，以及基于 KMS/HSM/MPC 的生产钱包签名后端。
+尚未完成：外部法币/PSP 通道余额适配与对账、监控仪表盘，以及面向大量充值地址归集的 HSM/MPC/分层密钥路由。当前 AWS KMS signer 适合单热钱包出款；主网上线仍需安全审计和受控预生产验证。
 
 ## 本地运行
 
@@ -399,6 +400,29 @@ go run ./cmd/gateway-testnet-signer
 
 签名服务固定使用 HTTPS 和 Bearer 鉴权，并在私钥使用前验证它与付款地址一致。它只签署单笔白名单 TRC20 `transfer`；归集端点还要求 `source_address` 必须等于该测试 signer 的付款地址。服务会对网络、合约、收款地址、金额、费用和有效期做二次校验，结果以请求 UUID 持久化后才响应。当前文件存储只支持单实例，部署多个 signer 实例前必须替换为具备一致性约束的共享存储。
 
+生产热钱包可使用 `gateway-kms-signer`。它要求 AWS KMS 非对称密钥为 `ECC_SECG_P256K1`、用途为 `SIGN_VERIFY`，私钥不可导出；signer 只把 32 字节交易摘要以 `ECDSA_SHA_256` / `DIGEST` 发送到 KMS。KMS 返回的 DER 签名会被转换为 TRON `r || s || v`、规范化为 low-S，并通过恢复公钥再次绑定配置地址。签名结果写入 PostgreSQL 后才响应，同一请求 UUID 在多个实例间只会创建一次结果。
+
+先应用数据库迁移，再使用 AWS 默认凭证链（工作负载身份优先）启动：
+
+```bash
+export GATEWAY_KMS_SIGNER_DATABASE_URL='postgres://signer_runtime:password@db/signer?sslmode=verify-full'
+export GATEWAY_KMS_SIGNER_TLS_CERT_FILE='/run/secrets/signer-tls.crt'
+export GATEWAY_KMS_SIGNER_TLS_KEY_FILE='/run/secrets/signer-tls.key'
+export GATEWAY_KMS_SIGNER_BEARER_TOKEN='从密钥管理服务注入的高熵令牌'
+export GATEWAY_KMS_SIGNER_NETWORK='tron-mainnet'
+export GATEWAY_KMS_SIGNER_ALLOW_MAINNET='true'
+export GATEWAY_KMS_SIGNER_FULL_NODE_URL='https://primary-full-node.example,https://backup-full-node.example'
+export GATEWAY_KMS_SIGNER_OWNER_ADDRESS='KMS公钥对应的TRON热钱包地址'
+export GATEWAY_KMS_SIGNER_CONTRACTS='允许转出的TRC20合约地址'
+export GATEWAY_KMS_SIGNER_MAX_AMOUNT='单笔最大小单位金额'
+export GATEWAY_KMS_SIGNER_AWS_REGION='ap-southeast-1'
+export GATEWAY_KMS_SIGNER_AWS_KEY_ID='alias/stablecoin-gateway-tron'
+
+go run ./cmd/gateway-kms-signer
+```
+
+主网除要求 `GATEWAY_KMS_SIGNER_ALLOW_MAINNET=true` 外，还应通过 IAM 只授予目标密钥的 `kms:GetPublicKey` 与 `kms:Sign`，数据库运行账号只授予 `signer_requests` 所需权限，并通过 mTLS 或工作负载身份隔离 signer 网络。当前命令绑定一个 KMS 密钥和一个来源地址，适合热钱包出款；大量充值地址归集不能共享该单密钥实例，需要后续 HSM/MPC 或经过审计的多密钥路由实现。
+
 配置 FullNode、SolidityNode 并启动出款执行 Worker：
 
 ```bash
@@ -503,7 +527,7 @@ go run ./cmd/gateway-deposit-worker
 ## 安全边界
 
 - 业务服务不得保存或记录明文私钥。
-- 仓库内文件密钥 signer 仅限测试网；生产签名必须改用独立 KMS/HSM/MPC 后端。
+- 仓库内文件密钥 signer 仅限测试网；生产热钱包使用独立 AWS KMS signer，多地址归集仍需 HSM/MPC 或经过审计的密钥路由。
 - 主网能力必须显式启用，并通过发布检查清单。
 - 地址筛查、KYC、AML 与牌照责任由部署运营方根据所在司法辖区落实。
 - 在安全审计、灾难恢复演练和资金对账验收完成前，不应承载真实资金。
