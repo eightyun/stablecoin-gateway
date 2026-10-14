@@ -15,6 +15,7 @@ import (
 	"github.com/eightyun/stablecoin-gateway/internal/chain/tron/nodehttp"
 	"github.com/eightyun/stablecoin-gateway/internal/config"
 	"github.com/eightyun/stablecoin-gateway/internal/database"
+	"github.com/eightyun/stablecoin-gateway/internal/observability"
 	"github.com/eightyun/stablecoin-gateway/internal/signer"
 )
 
@@ -29,6 +30,10 @@ func main() {
 
 func run(ctx context.Context) error {
 	cfg, err := config.LoadKMSSigner()
+	if err != nil {
+		return err
+	}
+	monitoringConfig, err := config.LoadObservability()
 	if err != nil {
 		return err
 	}
@@ -52,6 +57,17 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	monitoring, err := observability.New(observability.Config{
+		Addr: monitoringConfig.Addr, ReadHeaderTimeout: monitoringConfig.ReadHeaderTimeout,
+		ReadinessTimeout: monitoringConfig.ReadinessTimeout, ShutdownTimeout: monitoringConfig.ShutdownTimeout,
+	}, signerReadiness{database: pool, key: key})
+	if err != nil {
+		return err
+	}
+	observer, err := monitoring.NewSignerObserver(slog.Default())
+	if err != nil {
+		return err
+	}
 	builder, err := nodehttp.NewBuilder(nodehttp.BuilderConfig{
 		BaseURL: cfg.FullNodeURL, Network: cfg.Network, APIKey: cfg.NodeAPIKey,
 		OwnerAddress: cfg.OwnerAddress, FeeLimit: cfg.FeeLimit,
@@ -71,18 +87,38 @@ func run(ctx context.Context) error {
 	}
 	handler, err := signer.NewHTTPHandler(signer.HTTPConfig{
 		BearerToken: cfg.BearerToken, MaxRequestBodyBytes: cfg.MaxRequestBodyBytes,
+		RequestTimeout: cfg.RequestTimeout, Observer: observer,
 	}, service)
 	if err != nil {
 		return err
 	}
 	server := &http.Server{
 		Addr: cfg.HTTPAddr, Handler: handler, ReadHeaderTimeout: cfg.ReadHeaderTimeout,
-		ReadTimeout: 10 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: time.Minute,
+		ReadTimeout: 10 * time.Second, WriteTimeout: cfg.RequestTimeout + 5*time.Second, IdleTimeout: time.Minute,
 	}
+	slog.Info("KMS signer 开始运行", "address", cfg.HTTPAddr, "network", cfg.Network,
+		"observability_addr", monitoringConfig.Addr)
+	return monitoring.Run(ctx, func(workloadCtx context.Context) error {
+		return serveTLS(workloadCtx, server, cfg.TLSCertFile, cfg.TLSKeyFile, cfg.ShutdownTimeout)
+	})
+}
+
+type signerReadiness struct {
+	database observability.ReadinessChecker
+	key      observability.ReadinessChecker
+}
+
+func (checker signerReadiness) Ping(ctx context.Context) error {
+	if err := checker.database.Ping(ctx); err != nil {
+		return err
+	}
+	return checker.key.Ping(ctx)
+}
+
+func serveTLS(ctx context.Context, server *http.Server, certFile, keyFile string, shutdownTimeout time.Duration) error {
 	serveErrors := make(chan error, 1)
 	go func() {
-		slog.Info("KMS signer 已启动", "address", cfg.HTTPAddr, "network", cfg.Network, "owner", cfg.OwnerAddress)
-		serveErrors <- server.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+		serveErrors <- server.ListenAndServeTLS(certFile, keyFile)
 	}()
 	select {
 	case err := <-serveErrors:
@@ -91,10 +127,10 @@ func run(ctx context.Context) error {
 		}
 		return err
 	case <-ctx.Done():
-		shutdownContext, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		shutdownContext, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		if err := server.Shutdown(shutdownContext); err != nil {
-			return err
+			return errors.Join(err, server.Close())
 		}
 		err := <-serveErrors
 		if errors.Is(err, http.ErrServerClosed) {

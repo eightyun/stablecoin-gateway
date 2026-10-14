@@ -1,6 +1,33 @@
 groups:
   - name: stablecoin-gateway-business
     rules:
+      - alert: StablecoinGatewayKMSSignerDown
+        expr: up{job="stablecoin-gateway-kms-signer"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: KMS 签名服务监控端点不可用
+          description: Prometheus 已连续 2 分钟无法抓取 KMS signer，请检查进程和网络。
+
+      - alert: StablecoinGatewaySignerFailures
+        expr: sum by (job, instance) (increase(stablecoin_gateway_signer_requests_total{result=~"failed|timeout"}[5m])) >= 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 签名请求重复失败或超时
+          description: 最近 5 分钟至少 3 次签名请求失败或超时，请核对 KMS 权限、节点和数据库。
+
+      - alert: StablecoinGatewaySignerUnauthorizedRequests
+        expr: sum by (job, instance) (increase(stablecoin_gateway_signer_requests_total{result="unauthorized"}[5m])) >= 10
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 签名端点反复出现未授权请求
+          description: 最近 5 分钟至少 10 次请求未通过 signer 鉴权，请检查令牌配置和调用来源。
+
       - alert: StablecoinGatewayMonitorDown
         expr: up{job="stablecoin-gateway-monitor"} == 0
         for: 2m

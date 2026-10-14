@@ -44,6 +44,7 @@
 - TRON 测试网只读预检与默认关闭的主网广播安全开关
 - 独立的 Nile/Shasta 测试网签名服务、合约/金额白名单与持久化防重复签名
 - 基于 AWS KMS 不可导出 secp256k1 密钥的生产 signer，以及 PostgreSQL 跨实例幂等签名存储
+- KMS signer 独立健康探针、固定类别请求指标、脱敏审计日志和有界签名请求超时
 - Nile 真实 USDT 的充值入账，以及商户 API 驱动的出款、签名、广播、固化结算与安全过期恢复验证
 - 可用余额与冻结余额分离查询
 - 可重复读快照下的账本/业务引用与金额、借贷方向、账户归属对账，以及差异工单去重和关闭审计
@@ -420,6 +421,10 @@ export GATEWAY_KMS_SIGNER_AWS_KEY_ID='alias/stablecoin-gateway-tron'
 
 go run ./cmd/gateway-kms-signer
 ```
+
+KMS signer 复用 `GATEWAY_OBSERVABILITY_ADDR`（默认 `127.0.0.1:9090`）在独立端口提供 `/healthz`、`/readyz` 和 `/metrics`；`/readyz` 在受控超时内检查 PostgreSQL、KMS 公钥用途/算法及地址绑定，不执行签名，也不证明 `kms:Sign` 权限可用。探针每次调用 `GetPublicKey`，部署方应控制检查频率。Prometheus 抓取 job 命名为 `stablecoin-gateway-kms-signer` 可使用仓库内 signer 存活、失败/超时和鉴权失败告警。
+
+`stablecoin_gateway_signer_requests_total{operation,result}` 和 `stablecoin_gateway_signer_request_duration_seconds{operation}` 统计签名 HTTP 处理结果和耗时，涵盖鉴权、幂等读取、构造、签名和持久化。日志只包含固定结果类别、经鉴权的请求 UUID、成功交易 ID 和耗时；部署方需采集并持久保存日志。成功结果的不可变证据仍在 `signer_requests`，失败尝试日志不等同于独立持久审计表。`GATEWAY_KMS_SIGNER_REQUEST_TIMEOUT` 默认为 `25s`，最高 `1m`；超时返回 503 并取消下游上下文，调用方必须保留同一请求 UUID 重试。
 
 主网除要求 `GATEWAY_KMS_SIGNER_ALLOW_MAINNET=true` 外，还应通过 IAM 只授予目标密钥的 `kms:GetPublicKey` 与 `kms:Sign`，数据库运行账号只授予 `signer_requests` 所需权限，并通过 mTLS 或工作负载身份隔离 signer 网络。当前命令绑定一个 KMS 密钥和一个来源地址，适合热钱包出款；大量充值地址归集不能共享该单密钥实例，需要后续 HSM/MPC 或经过审计的多密钥路由实现。
 

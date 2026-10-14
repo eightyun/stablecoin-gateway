@@ -9,8 +9,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/eightyun/stablecoin-gateway/internal/chain/tron"
+	"github.com/eightyun/stablecoin-gateway/internal/identity"
 )
 
 const defaultMaxRequestBodyBytes int64 = 64 << 10
@@ -19,6 +21,22 @@ const defaultMaxRequestBodyBytes int64 = 64 << 10
 type HTTPConfig struct {
 	BearerToken         string
 	MaxRequestBodyBytes int64
+	RequestTimeout      time.Duration
+	Observer            HTTPObserver
+}
+
+// HTTPResult 保存可观测请求结果，不包含资金明细或签名原文。
+type HTTPResult struct {
+	Operation     string
+	Result        string
+	RequestID     string
+	TransactionID string
+	Duration      time.Duration
+}
+
+// HTTPObserver 接收每次 HTTP 请求的固定类别与脱敏结果。
+type HTTPObserver interface {
+	Completed(HTTPResult)
 }
 
 type transferSigner interface {
@@ -34,12 +52,13 @@ type httpHandler struct {
 	sweepSigner         sweepSigner
 	authorization       string
 	maxRequestBodyBytes int64
+	observer            HTTPObserver
 }
 
 // NewHTTPHandler 创建受鉴权保护的转账与归集签名 HTTP Handler。
 func NewHTTPHandler(config HTTPConfig, service transferSigner) (http.Handler, error) {
 	token := strings.TrimSpace(config.BearerToken)
-	if service == nil || token == "" || len(token) > 4096 || config.MaxRequestBodyBytes < 0 {
+	if service == nil || token == "" || len(token) > 4096 || config.MaxRequestBodyBytes < 0 || config.RequestTimeout < 0 {
 		return nil, ErrInvalidConfig
 	}
 	for _, character := range token {
@@ -55,13 +74,40 @@ func NewHTTPHandler(config HTTPConfig, service transferSigner) (http.Handler, er
 		return nil, ErrInvalidConfig
 	}
 	sweepService, _ := service.(sweepSigner)
-	return &httpHandler{
+	var handler http.Handler = &httpHandler{
 		signer: service, authorization: "Bearer " + token, maxRequestBodyBytes: maxBytes,
-		sweepSigner: sweepService,
-	}, nil
+		sweepSigner: sweepService, observer: config.Observer,
+	}
+	if config.RequestTimeout > 0 {
+		handler = http.TimeoutHandler(handler, config.RequestTimeout, `{"error":"signing_timeout"}`)
+	}
+	return handler, nil
 }
 
 func (handler *httpHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	started := time.Now()
+	event := HTTPResult{Operation: "unknown"}
+	switch request.URL.Path {
+	case "/v1/tron/transfers:sign":
+		event.Operation = "transfer"
+	case "/v1/tron/sweeps:sign":
+		event.Operation = "sweep"
+	}
+	recorded := &statusWriter{ResponseWriter: response, status: http.StatusOK}
+	response = recorded
+	defer func() {
+		if handler.observer == nil {
+			return
+		}
+		event.Duration = time.Since(started)
+		event.Result = httpResult(recorded.status)
+		if errors.Is(request.Context().Err(), context.DeadlineExceeded) {
+			event.Result = "timeout"
+		} else if errors.Is(request.Context().Err(), context.Canceled) {
+			event.Result = "canceled"
+		}
+		handler.observer.Completed(event)
+	}()
 	response.Header().Set("Content-Type", "application/json")
 	response.Header().Set("Cache-Control", "no-store")
 	if (request.URL.Path != "/v1/tron/transfers:sign" && request.URL.Path != "/v1/tron/sweeps:sign") ||
@@ -80,6 +126,9 @@ func (handler *httpHandler) ServeHTTP(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	if requestID := request.Header.Get("Idempotency-Key"); identity.ValidUUID(requestID) {
+		event.RequestID = strings.ToLower(requestID)
+	}
 	if mediaType := strings.TrimSpace(strings.Split(request.Header.Get("Content-Type"), ";")[0]); mediaType != "application/json" {
 		writeError(response, http.StatusUnsupportedMediaType, "unsupported_media_type")
 		return
@@ -90,13 +139,13 @@ func (handler *httpHandler) ServeHTTP(response http.ResponseWriter, request *htt
 		return
 	}
 	if request.URL.Path == "/v1/tron/sweeps:sign" {
-		handler.handleSweep(response, request, body)
+		handler.handleSweep(response, request, body, &event)
 		return
 	}
-	handler.handleTransfer(response, request, body)
+	handler.handleTransfer(response, request, body, &event)
 }
 
-func (handler *httpHandler) handleTransfer(response http.ResponseWriter, request *http.Request, body []byte) {
+func (handler *httpHandler) handleTransfer(response http.ResponseWriter, request *http.Request, body []byte, event *HTTPResult) {
 	var input struct {
 		RequestID          string `json:"request_id"`
 		Network            string `json:"network"`
@@ -118,10 +167,13 @@ func (handler *httpHandler) handleTransfer(response http.ResponseWriter, request
 	if writeSigningError(response, err) {
 		return
 	}
+	if validRequestHash(transaction.ID) {
+		event.TransactionID = transaction.ID
+	}
 	writeTransaction(response, transaction)
 }
 
-func (handler *httpHandler) handleSweep(response http.ResponseWriter, request *http.Request, body []byte) {
+func (handler *httpHandler) handleSweep(response http.ResponseWriter, request *http.Request, body []byte, event *HTTPResult) {
 	if handler.sweepSigner == nil {
 		writeError(response, http.StatusNotFound, "not_found")
 		return
@@ -149,7 +201,37 @@ func (handler *httpHandler) handleSweep(response http.ResponseWriter, request *h
 	if writeSigningError(response, err) {
 		return
 	}
+	if validRequestHash(transaction.ID) {
+		event.TransactionID = transaction.ID
+	}
 	writeTransaction(response, transaction)
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (writer *statusWriter) WriteHeader(status int) {
+	writer.status = status
+	writer.ResponseWriter.WriteHeader(status)
+}
+
+func httpResult(status int) string {
+	switch status {
+	case http.StatusOK:
+		return "success"
+	case http.StatusUnauthorized:
+		return "unauthorized"
+	case http.StatusConflict:
+		return "conflict"
+	case http.StatusUnprocessableEntity:
+		return "policy_denied"
+	case http.StatusInternalServerError:
+		return "failed"
+	default:
+		return "invalid_request"
+	}
 }
 
 func writeSigningError(response http.ResponseWriter, err error) bool {

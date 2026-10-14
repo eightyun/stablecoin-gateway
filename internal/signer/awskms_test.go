@@ -150,3 +150,36 @@ func TestDERToTRONSignatureNormalizesHighS(t *testing.T) {
 		t.Fatalf("签名未规范化为 low-S: %x", signature)
 	}
 }
+
+func TestAWSKMSReadinessRejectsChangedKeyAndDoesNotSign(t *testing.T) {
+	privateKey := testKMSPrivateKey(t)
+	defer privateKey.Zero()
+	client := &kmsClientStub{publicKeyOutput: &kms.GetPublicKeyOutput{
+		PublicKey: marshalKMSPublicKey(t, privateKey.PubKey().SerializeUncompressed()),
+		KeySpec:   types.KeySpecEccSecgP256k1, KeyUsage: types.KeyUsageTypeSignVerify,
+		SigningAlgorithms: []types.SigningAlgorithmSpec{types.SigningAlgorithmSpecEcdsaSha256},
+	}}
+	key, err := NewAWSKMSKey(context.Background(), client, "alias/gateway")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := key.Ping(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	other, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Zero()
+	client.publicKeyOutput.PublicKey = marshalKMSPublicKey(t, other.PubKey().SerializeUncompressed())
+	if err := key.Ping(context.Background()); !errors.Is(err, ErrInvalidKMSKey) {
+		t.Fatalf("变更公钥 Ping() = %v", err)
+	}
+	client.publicKeyOutput.KeyUsage = types.KeyUsageTypeEncryptDecrypt
+	if err := key.Ping(context.Background()); !errors.Is(err, ErrInvalidKMSKey) {
+		t.Fatalf("无效用途 Ping() = %v", err)
+	}
+	if client.signInput != nil {
+		t.Fatal("就绪探针不应请求签名")
+	}
+}

@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadKMSSignerRequiresExplicitMainnetOptIn(t *testing.T) {
@@ -25,8 +26,25 @@ func TestLoadKMSSignerRequiresExplicitMainnetOptIn(t *testing.T) {
 func TestLoadKMSSignerAllowsTestnetWithoutMainnetOptIn(t *testing.T) {
 	setKMSSignerEnv(t)
 	config, err := LoadKMSSigner()
-	if err != nil || config.Network != "tron-nile" {
+	if err != nil || config.Network != "tron-nile" || config.RequestTimeout != 25*time.Second {
 		t.Fatalf("LoadKMSSigner() = %+v, %v", config, err)
+	}
+}
+
+func TestLoadKMSSignerRequestTimeout(t *testing.T) {
+	setKMSSignerEnv(t)
+	t.Setenv("GATEWAY_KMS_SIGNER_REQUEST_TIMEOUT", "10s")
+	cfg, err := LoadKMSSigner()
+	if err != nil || cfg.RequestTimeout != 10*time.Second {
+		t.Fatalf("RequestTimeout = %v error=%v", cfg.RequestTimeout, err)
+	}
+	t.Setenv("GATEWAY_KMS_SIGNER_REQUEST_TIMEOUT", "-1s")
+	if _, err := LoadKMSSigner(); err == nil {
+		t.Fatal("应拒绝负超时")
+	}
+	t.Setenv("GATEWAY_KMS_SIGNER_REQUEST_TIMEOUT", "2m")
+	if _, err := LoadKMSSigner(); err == nil {
+		t.Fatal("应拒绝过长超时")
 	}
 }
 

@@ -44,6 +44,7 @@ Implemented components:
 - Read-only TRON testnet preflight and a mainnet broadcast safety switch that is off by default
 - Isolated Nile/Shasta testnet signer with contract/amount policy and durable replay protection
 - Production signer backed by a non-exportable AWS KMS secp256k1 key and cross-instance PostgreSQL idempotency
+- Dedicated KMS signer health probes, bounded request metrics, redacted audit logs, and signing request deadlines
 - Live Nile USDT validation covering deposit posting plus merchant-API-driven payout, signing, broadcast, finalized settlement, and safe expiry recovery
 - Separate available and frozen balance reporting
 - Repeatable-read reconciliation of ledger references, amounts, debit/credit direction, and account ownership, with deduplicated cases and audited resolution
@@ -420,6 +421,10 @@ export GATEWAY_KMS_SIGNER_AWS_KEY_ID='alias/stablecoin-gateway-tron'
 
 go run ./cmd/gateway-kms-signer
 ```
+
+The KMS signer uses `GATEWAY_OBSERVABILITY_ADDR` (default `127.0.0.1:9090`) for separate `/healthz`, `/readyz`, and `/metrics` endpoints. Readiness checks PostgreSQL plus the KMS public key's usage, algorithm, and address binding within a bounded timeout. It does not sign or prove `kms:Sign` permission. Each probe calls `GetPublicKey`, so operators should control its frequency. Name the Prometheus scrape job `stablecoin-gateway-kms-signer` to use the included signer availability, failure/timeout, and authorization alerts.
+
+`stablecoin_gateway_signer_requests_total{operation,result}` and `stablecoin_gateway_signer_request_duration_seconds{operation}` cover HTTP processing, including authorization, idempotency lookup, construction, signing, and persistence. Logs contain only bounded result categories, authenticated request UUIDs, successful transaction IDs, and durations; operators must collect and retain them. Immutable successful results remain in `signer_requests`; failed-attempt logs are not a separate durable audit table. `GATEWAY_KMS_SIGNER_REQUEST_TIMEOUT` defaults to `25s` and is capped at `1m`. A timeout returns 503 and cancels downstream contexts; callers must reuse the same request UUID when retrying.
 
 In addition to `GATEWAY_KMS_SIGNER_ALLOW_MAINNET=true`, a mainnet deployment should grant IAM only `kms:GetPublicKey` and `kms:Sign` on the selected key, limit the runtime database role to the required `signer_requests` access, and isolate the signer network with mTLS or workload identity. One process binds one KMS key and source address, which is suitable for hot-wallet payouts. Sweeping a large deposit-address set requires a later HSM/MPC backend or an audited multi-key router.
 

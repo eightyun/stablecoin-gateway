@@ -70,6 +70,21 @@ func (key *AWSKMSKey) Address() string {
 	return key.address
 }
 
+// Ping 只读取 KMS 公钥元数据并复验地址绑定，不执行签名操作。
+func (key *AWSKMSKey) Ping(ctx context.Context) error {
+	if key == nil || key.client == nil {
+		return ErrInvalidKMSConfig
+	}
+	current, err := NewAWSKMSKey(ctx, key.client, key.keyID)
+	if err != nil {
+		return err
+	}
+	if current.address != key.address {
+		return ErrInvalidKMSKey
+	}
+	return nil
+}
+
 // SignDigest 请求 KMS 签署已计算的 SHA-256 摘要并返回 TRON r || s || v 签名。
 func (key *AWSKMSKey) SignDigest(ctx context.Context, digest []byte) ([]byte, error) {
 	if key == nil || key.client == nil || len(digest) != 32 {

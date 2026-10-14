@@ -37,6 +37,7 @@ type KMSSignerConfig struct {
 	NodeMaxResponseBytes   int64
 	ReadHeaderTimeout      time.Duration
 	ShutdownTimeout        time.Duration
+	RequestTimeout         time.Duration
 	AWSRegion              string
 	AWSKMSKeyID            string
 }
@@ -105,6 +106,13 @@ func LoadKMSSigner() (KMSSignerConfig, error) {
 	if err != nil {
 		return KMSSignerConfig{}, err
 	}
+	requestTimeout, err := durationFromEnv("GATEWAY_KMS_SIGNER_REQUEST_TIMEOUT", 25*time.Second)
+	if err != nil {
+		return KMSSignerConfig{}, err
+	}
+	if requestTimeout > time.Minute {
+		return KMSSignerConfig{}, fmt.Errorf("GATEWAY_KMS_SIGNER_REQUEST_TIMEOUT 不能超过 1m")
+	}
 	httpAddr := strings.TrimSpace(os.Getenv("GATEWAY_KMS_SIGNER_HTTP_ADDR"))
 	if httpAddr == "" {
 		httpAddr = defaultKMSSignerHTTPAddr
@@ -118,7 +126,8 @@ func LoadKMSSigner() (KMSSignerConfig, error) {
 		MaxTransactionLifetime: maxLifetime, MaxRequestBodyBytes: maxRequestBytes,
 		NodeMaxResponseBytes: maxResponseBytes, ReadHeaderTimeout: readHeaderTimeout,
 		ShutdownTimeout: shutdownTimeout, AWSRegion: values["GATEWAY_KMS_SIGNER_AWS_REGION"],
-		AWSKMSKeyID: values["GATEWAY_KMS_SIGNER_AWS_KEY_ID"],
+		RequestTimeout: requestTimeout,
+		AWSKMSKeyID:    values["GATEWAY_KMS_SIGNER_AWS_KEY_ID"],
 	}, nil
 }
 
