@@ -45,6 +45,7 @@ Implemented components:
 - Isolated Nile/Shasta testnet signer with contract/amount policy and durable replay protection
 - Production signer backed by a non-exportable AWS KMS secp256k1 key and cross-instance PostgreSQL idempotency
 - Dedicated KMS signer health probes, bounded request metrics, redacted audit logs, and signing request deadlines
+- Standalone KMS acceptance command for public-key checks or random challenge signing with redacted JSON output
 - Live Nile USDT validation covering deposit posting plus merchant-API-driven payout, signing, broadcast, finalized settlement, and safe expiry recovery
 - Separate available and frozen balance reporting
 - Repeatable-read reconciliation of ledger references, amounts, debit/credit direction, and account ownership, with deduplicated cases and audited resolution
@@ -427,6 +428,20 @@ The KMS signer uses `GATEWAY_OBSERVABILITY_ADDR` (default `127.0.0.1:9090`) for 
 `stablecoin_gateway_signer_requests_total{operation,result}` and `stablecoin_gateway_signer_request_duration_seconds{operation}` cover HTTP processing, including authorization, idempotency lookup, construction, signing, and persistence. Logs contain only bounded result categories, authenticated request UUIDs, successful transaction IDs, and durations; operators must collect and retain them. Immutable successful results remain in `signer_requests`; failed-attempt logs are not a separate durable audit table. `GATEWAY_KMS_SIGNER_REQUEST_TIMEOUT` defaults to `25s` and is capped at `1m`. A timeout returns 503 and cancels downstream contexts; callers must reuse the same request UUID when retrying.
 
 In addition to `GATEWAY_KMS_SIGNER_ALLOW_MAINNET=true`, a mainnet deployment should grant IAM only `kms:GetPublicKey` and `kms:Sign` on the selected key, limit the runtime database role to the required `signer_requests` access, and isolate the signer network with mTLS or workload identity. One process binds one KMS key and source address, which is suitable for hot-wallet payouts. Sweeping a large deposit-address set requires a later HSM/MPC backend or an audited multi-key router.
+
+Validate a real KMS key in the target deployment using `GATEWAY_KMS_SIGNER_AWS_REGION`, `GATEWAY_KMS_SIGNER_AWS_KEY_ID`, and the independently registered `GATEWAY_KMS_SIGNER_OWNER_ADDRESS`. Provide workload identity through the AWS default credential chain:
+
+```bash
+# Read and check the public key and expected address without calling Sign
+go run ./cmd/gateway-kms-acceptance
+
+# Explicitly sign a random challenge to check Sign permission and TRON conversion
+go run ./cmd/gateway-kms-acceptance --sign --timeout 30s
+```
+
+Use `--region`, `--key-id`, or `--expected-address` to override configuration; the total deadline is capped at `1m`. The `--sign` digest comes from a fixed acceptance domain and system randomness. The command accepts no arbitrary digest or transaction input and constructs or broadcasts no payment. Output contains only the mode, an address SHA-256 fingerprint, binding/verification results, and a UTC timestamp. Raw cloud errors, ARNs, addresses, signatures, and credentials are not printed. `signature_verified=false` in the default public-key mode means signing was not checked; only `signature_verified=true` in signature mode confirms that the actual signing round trip succeeded.
+
+The command needs no database, TLS service, or wallet funds. Passing it does not validate HTTP authorization, idempotent recovery, or on-chain payouts. Repository tests use a local AWS protocol simulator; real cloud acceptance still needs the configured target key and identity, followed by execution and report retention.
 
 Configure the FullNode and SolidityNode endpoints, then start the payout execution worker:
 

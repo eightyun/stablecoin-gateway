@@ -45,6 +45,7 @@
 - 独立的 Nile/Shasta 测试网签名服务、合约/金额白名单与持久化防重复签名
 - 基于 AWS KMS 不可导出 secp256k1 密钥的生产 signer，以及 PostgreSQL 跨实例幂等签名存储
 - KMS signer 独立健康探针、固定类别请求指标、脱敏审计日志和有界签名请求超时
+- 独立 KMS 验收命令，支持只读公钥检查或随机挑战签名复验，输出脱敏 JSON
 - Nile 真实 USDT 的充值入账，以及商户 API 驱动的出款、签名、广播、固化结算与安全过期恢复验证
 - 可用余额与冻结余额分离查询
 - 可重复读快照下的账本/业务引用与金额、借贷方向、账户归属对账，以及差异工单去重和关闭审计
@@ -427,6 +428,20 @@ KMS signer 复用 `GATEWAY_OBSERVABILITY_ADDR`（默认 `127.0.0.1:9090`）在�
 `stablecoin_gateway_signer_requests_total{operation,result}` 和 `stablecoin_gateway_signer_request_duration_seconds{operation}` 统计签名 HTTP 处理结果和耗时，涵盖鉴权、幂等读取、构造、签名和持久化。日志只包含固定结果类别、经鉴权的请求 UUID、成功交易 ID 和耗时；部署方需采集并持久保存日志。成功结果的不可变证据仍在 `signer_requests`，失败尝试日志不等同于独立持久审计表。`GATEWAY_KMS_SIGNER_REQUEST_TIMEOUT` 默认为 `25s`，最高 `1m`；超时返回 503 并取消下游上下文，调用方必须保留同一请求 UUID 重试。
 
 主网除要求 `GATEWAY_KMS_SIGNER_ALLOW_MAINNET=true` 外，还应通过 IAM 只授予目标密钥的 `kms:GetPublicKey` 与 `kms:Sign`，数据库运行账号只授予 `signer_requests` 所需权限，并通过 mTLS 或工作负载身份隔离 signer 网络。当前命令绑定一个 KMS 密钥和一个来源地址，适合热钱包出款；大量充值地址归集不能共享该单密钥实例，需要后续 HSM/MPC 或经过审计的多密钥路由实现。
+
+在目标部署环境验收真实 KMS 密钥时，复用 `GATEWAY_KMS_SIGNER_AWS_REGION`、`GATEWAY_KMS_SIGNER_AWS_KEY_ID` 和预先登记的 `GATEWAY_KMS_SIGNER_OWNER_ADDRESS`，通过 AWS 默认凭证链提供工作负载身份：
+
+```bash
+# 默认只读取公钥并核对预期地址，不执行 Sign
+go run ./cmd/gateway-kms-acceptance
+
+# 显式执行随机挑战签名，验证实际 Sign 权限及 TRON 签名转换
+go run ./cmd/gateway-kms-acceptance --sign --timeout 30s
+```
+
+也可使用 `--region`、`--key-id` 和 `--expected-address` 覆盖配置；验收总超时最高 `1m`。`--sign` 的摘要由固定验收域与系统随机数生成，不接受任意摘要或交易输入，也不构造或广播链上付款。输出仅包含验收模式、地址 SHA-256 指纹、绑定/复验结果和 UTC 时间；云服务原始错误、ARN、地址、签名与凭证不会输出。默认公钥模式的 `signature_verified=false` 表示未检查签名；只有签名模式返回 `signature_verified=true` 才证明本次实际签名闭环成功。
+
+该命令不依赖数据库、TLS 服务或钱包余额；其通过不代表 HTTP 鉴权、幂等恢复和链上付款已完成生产验收。仓库自动测试使用本地 AWS 协议模拟服务，真实云验收尚需在配置目标密钥与身份后执行并保留报告。
 
 配置 FullNode、SolidityNode 并启动出款执行 Worker：
 
