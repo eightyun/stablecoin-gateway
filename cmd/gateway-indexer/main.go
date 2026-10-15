@@ -50,6 +50,7 @@ func run(ctx context.Context) error {
 	reader, err := nodehttp.New(nodehttp.Config{
 		BaseURL:          cfg.NodeURL,
 		Network:          cfg.Network,
+		TrackedContract:  cfg.Contract,
 		APIKey:           cfg.NodeAPIKey,
 		MaxResponseBytes: cfg.MaxResponseBytes,
 		Observer:         monitoring.TRONNodeObserver(),

@@ -20,6 +20,7 @@ Implemented components:
 - Transactional Outbox foundation
 - Deterministic TRON simulator
 - SolidityNode finalized-block reader and TRC20 log decoder
+- Deposit indexer filters the tracked contract before decoding, so unrelated NFT/malformed Transfer logs cannot stall scanning; tracked-asset logs remain strictly validated
 - Multi-endpoint TRON FullNode/SolidityNode failover with Prometheus alerts for reads, transaction construction, and same-txID broadcast
 - Durable scan cursor with leases and fencing tokens
 - Standalone TRON indexer worker

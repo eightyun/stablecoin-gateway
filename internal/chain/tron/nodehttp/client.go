@@ -36,8 +36,10 @@ var (
 
 // Config 是 TRON HTTP 连接配置。BaseURL 可按优先级提供逗号分隔的同网络端点。
 type Config struct {
-	BaseURL          string
-	Network          string
+	BaseURL string
+	Network string
+	// TrackedContract 只过滤区块中的 Transfer 日志；空值保持全合约严格解析。
+	TrackedContract  string
 	APIKey           string
 	MaxResponseBytes int64
 	Observer         Observer
@@ -47,6 +49,7 @@ type Config struct {
 type Client struct {
 	baseURLs         []*url.URL
 	network          string
+	trackedContract  string
 	apiKey           string
 	maxResponseBytes int64
 	httpClient       *http.Client
@@ -78,6 +81,13 @@ func New(config Config, httpClient *http.Client) (*Client, error) {
 	if err != nil || strings.TrimSpace(config.Network) == "" || config.MaxResponseBytes < 0 {
 		return nil, ErrInvalidConfig
 	}
+	trackedContract := strings.TrimSpace(config.TrackedContract)
+	if trackedContract != "" {
+		trackedContract, err = tron.NormalizeAddressHex(trackedContract)
+		if err != nil {
+			return nil, ErrInvalidConfig
+		}
+	}
 	if httpClient == nil {
 		httpClient = &http.Client{
 			Timeout: 15 * time.Second,
@@ -95,6 +105,7 @@ func New(config Config, httpClient *http.Client) (*Client, error) {
 	return &Client{
 		baseURLs:         baseURLs,
 		network:          strings.TrimSpace(config.Network),
+		trackedContract:  trackedContract,
 		apiKey:           config.APIKey,
 		maxResponseBytes: maxResponseBytes,
 		httpClient:       httpClient,
@@ -503,12 +514,16 @@ func (client *Client) parseTransfers(transactionID string, logs []wireLog) ([]tr
 		if len(log.Topics) == 0 || !strings.EqualFold(log.Topics[0], transferTopic) {
 			continue
 		}
-		if uint64(index) > uint64(^uint32(0)) || len(log.Topics) != 3 {
-			return nil, fmt.Errorf("交易 %s 的 Transfer 日志结构错误: %w", transactionID, ErrInvalidResponse)
-		}
 		contract, err := normalizedAddress(log.Address)
 		if err != nil {
 			return nil, fmt.Errorf("交易 %s 的合约地址: %w", transactionID, err)
+		}
+		// 同名 Transfer 也用于 NFT；先排除非目标合约，目标日志仍严格校验。
+		if client.trackedContract != "" && contract != client.trackedContract {
+			continue
+		}
+		if uint64(index) > uint64(^uint32(0)) || len(log.Topics) != 3 {
+			return nil, fmt.Errorf("交易 %s 的 Transfer 日志结构错误: %w", transactionID, ErrInvalidResponse)
 		}
 		from, err := topicAddress(log.Topics[1])
 		if err != nil {

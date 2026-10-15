@@ -20,6 +20,7 @@
 - Transactional Outbox 基础能力
 - TRON 确定性模拟器
 - SolidityNode 已固化区块读取与 TRC20 日志解析
+- 充值索引器在解码前过滤目标合约，避免其他合约的 NFT/畸形 Transfer 阻断扫描；目标资产日志仍严格校验
 - TRON FullNode/SolidityNode 多端点故障切换及 Prometheus 告警，覆盖读取、交易构造和同 txID 广播
 - 带租约和栅栏令牌的持久化扫描游标
 - 独立 TRON 扫描 Worker
