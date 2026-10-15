@@ -215,7 +215,17 @@ func run(opts options) error {
 func publicEntries(root, binDir string) ([]entry, error) {
 	// 仅打包固定公开路径，不遍历工作区，避免带入 docs、环境文件、签名状态或私钥。
 	paths := []string{"README.md", "README.en.md", "LICENSE", "SECURITY.md", ".env.example"}
-	for _, path := range []string{"configs/prometheus/alerts.yml", "configs/grafana/dashboards/stablecoin-gateway.json", "configs/grafana/provisioning/dashboards/stablecoin-gateway.yml", "configs/systemd/stablecoin-gateway@.service", "configs/systemd/api.env.example", "configs/systemd/monitor.env.example"} {
+	for _, path := range []string{
+		"configs/prometheus/alerts.yml",
+		"configs/grafana/dashboards/stablecoin-gateway.json",
+		"configs/grafana/provisioning/dashboards/stablecoin-gateway.yml",
+		"configs/systemd/stablecoin-gateway@.service",
+		"configs/systemd/stablecoin-gateway-controls@.service",
+		"configs/systemd/stablecoin-gateway-controls@.timer",
+		"configs/systemd/api.env.example",
+		"configs/systemd/monitor.env.example",
+		"configs/systemd/controls.env.example",
+	} {
 		paths = append(paths, path)
 	}
 	var entries []entry

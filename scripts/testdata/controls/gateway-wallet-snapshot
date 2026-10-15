@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+printf 'phase=snapshot-start\n'
+sleep "${CONTROL_TEST_SNAPSHOT_DELAY:-0}"
+if [ "${CONTROL_TEST_SNAPSHOT_EXIT:-0}" != 0 ]; then
+  printf 'phase=snapshot-failed\n'
+  exit "$CONTROL_TEST_SNAPSHOT_EXIT"
+fi
+printf 'phase=snapshot-complete\n'

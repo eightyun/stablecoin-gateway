@@ -119,12 +119,35 @@ sudo install -m 0644 /opt/stablecoin-gateway/current/configs/systemd/stablecoin-
 
 3. 按后文完成测试网预检、资产/商户/充值地址和托管钱包准备，部署筛查适配器及独立测试网 signer；未提供有效筛查结果时系统应阻断资金操作，而不是改成默认 allow。首次资产/商户初始化仍需运营方审查并写入数据库，当前没有一键开户或自动生成生产钱包的安装器。
 4. 为每个进程创建独立系统账号 `gateway-<实例名>`，再单独创建 `/etc/stablecoin-gateway/<实例名>.env`（0600），按 `.env.example` 和后文配置必需项，同机 `GATEWAY_OBSERVABILITY_ADDR` 必须端口唯一。启用 `indexer`、`deposit-screening-worker`、`deposit-worker`、`payout-screening-worker`、`payout-signing-worker`、`payout-execution-worker` 和 `webhook-worker`；例如 `systemctl enable --now stablecoin-gateway@indexer`。出款仍需有效筛查和人工审批。
-5. 需要归集时另启用 `sweep-screening-worker`、`sweep-planner`、`sweep-signing-worker`、`sweep-execution-worker`。通过调度器串行执行 `gateway-wallet-snapshot` 后再执行 `gateway-reconcile`，配置对应资产、执行周期、超时和失败告警，禁止重叠运行；这两个命令不是常驻 Worker，不能套用自动重启模板。
+5. 需要归集时另启用 `sweep-screening-worker`、`sweep-planner`、`sweep-signing-worker`、`sweep-execution-worker`。使用下方独立 timer 串行执行 `gateway-wallet-snapshot` 和 `gateway-reconcile`；这两个命令不是常驻 Worker，不能套用自动重启模板。
 6. 接入 Prometheus、告警通知与 Grafana，核对 Worker `/readyz`、任务推进与最近快照时间。API `/healthz` 只代表 HTTP 存活，不是数据库就绪或支付业务验收。API 对外访问需经过 TLS 反向代理；观测端口仅向监控网络开放。
 
-升级时先关闭商户写入口，暂停创建/审批新出款及归集，优雅停止相关进程并记录在途 txID；保留数据库、密钥版本及签名幂等存储的一致备份。先在隔离恢复库执行目标版本迁移和 `gateway-recovery-audit`，再停写迁移正式库，切换 `current` 并分阶段启动、核对任务接管和对账后开放入口。仅在 schema 和消息格式确认向后兼容时允许切回旧程序；不兼容时走经审批的恢复/前向修复，不自动降级数据库、不丢弃签名记录或重建在途交易。
+升级时先关闭商户写入口，暂停创建/审批新出款及归集，停用资金检查 timer 并停止其活动 oneshot，优雅停止相关进程并记录在途 txID；保留数据库、密钥版本及签名幂等存储的一致备份。先在隔离恢复库执行目标版本迁移和 `gateway-recovery-audit`，再停写迁移正式库，切换 `current` 并分阶段启动、核对任务接管和对账后开放入口。仅在 schema 和消息格式确认向后兼容时允许切回旧程序；不兼容时走经审批的恢复/前向修复，不自动降级数据库、不丢弃签名记录或重建在途交易。
 
 持续运行验收尚需单独进行：固定提交、配置版本和测试网钱包，至少覆盖约定观察窗口内的真实收付、归集、定时快照/对账、重启与告警送达，记录零重复结算、未解释差异、积压和错误率。一次打包或探针通过不等于这项验收完成。
+
+### 定时钱包快照与对账
+
+[`stablecoin-gateway-controls@.service`](configs/systemd/stablecoin-gateway-controls@.service) 和 [timer](configs/systemd/stablecoin-gateway-controls@.timer) 为每个资产创建一个串行检查单元：先采集固化钱包快照，成功后再执行账本完整性检查与该资产的钱包对账。快照命令失败时不会运行后续对账；两个资产环境变量都必须与实例名一致，否则启动前就失败。整体执行上限 10 分钟，停止宽限 45 秒；不会读取私钥或广播交易。
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin gateway-controls
+sudo install -m 0644 /opt/stablecoin-gateway/current/configs/systemd/stablecoin-gateway-controls@.service /opt/stablecoin-gateway/current/configs/systemd/stablecoin-gateway-controls@.timer /etc/systemd/system/
+sudo install -m 0600 /opt/stablecoin-gateway/current/configs/systemd/controls.env.example /etc/stablecoin-gateway/controls-usdt-tron-nile.env
+# 安全填写数据库、节点配置；不要覆盖两个资产环境变量
+sudo systemctl daemon-reload
+# 首次执行后检查日志、对账工单和指标，再启用周期执行
+sudo systemctl start stablecoin-gateway-controls@usdt-tron-nile.service
+sudo journalctl -u stablecoin-gateway-controls@usdt-tron-nile.service -n 100 --no-pager
+sudo systemctl enable --now stablecoin-gateway-controls@usdt-tron-nile.timer
+systemctl list-timers 'stablecoin-gateway-controls@*'
+```
+
+示例资产必须已登记并有活动托管钱包。账号按最小权限授予业务/钱包读取、快照与对账写入权限，不授予签名/付款能力。仅在一台调度主机上启用同一数据库、同一资产的 timer；这是单机 unit 互斥，不是分布式锁。手工补跑也使用同一个 `.service`，不要绕开它并发运行独立命令。
+
+首次触发基准为开机后 2 分钟（启用时可能立即执行）；后续在上一轮结束后等待 5 分钟，加最多 30 秒随机延迟，不追赶补跑，也不堆积重叠任务。失败会保留 unit 状态和 journal，下一周期重新执行。对账发现差异会写入工单并输出 WARN，但当前 `gateway-reconcile` 仍可能以 0 退出；**unit 成功不代表资金无差异**，必须同时检查工单指标和新鲜度告警，并将默认日级阈值按实际周期调整。账本完整性检查仍覆盖全库，钱包核对仅针对绑定资产。
+
+维护时先 `systemctl disable --now stablecoin-gateway-controls@usdt-tron-nile.timer`，再 `systemctl stop stablecoin-gateway-controls@usdt-tron-nile.service`；只停 timer 不会终止正在运行的检查。CI 在临时 Linux runner 的真实 systemd 中验证串行、失败短路、资产错配、超时和定时不重叠；使用无数据库/钱包的测试进程，不等同于真实资金持续运行验收。
 
 ## 本地运行
 

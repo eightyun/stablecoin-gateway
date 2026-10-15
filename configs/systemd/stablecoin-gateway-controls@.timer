@@ -1,0 +1,12 @@
+[Unit]
+Description=Schedule stablecoin-gateway custody controls for %i
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=30s
+AccuracySec=1s
+Unit=stablecoin-gateway-controls@%i.service
+
+[Install]
+WantedBy=timers.target

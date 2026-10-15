@@ -118,7 +118,7 @@ func TestPublicEntriesExcludeWorkspaceSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 12 {
+	if len(entries) != 15 {
 		t.Fatalf("公共文件白名单发生非预期变化: %d", len(entries))
 	}
 	for _, item := range entries {

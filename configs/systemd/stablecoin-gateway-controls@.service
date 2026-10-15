@@ -1,0 +1,35 @@
+[Unit]
+Description=stablecoin-gateway custody controls for %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=gateway-controls
+Group=gateway-controls
+WorkingDirectory=/opt/stablecoin-gateway/current
+Environment=GATEWAY_WALLET_SNAPSHOT_ASSET_ID=%i
+Environment=GATEWAY_RECONCILIATION_WALLET_ASSET_ID=%i
+EnvironmentFile=/etc/stablecoin-gateway/controls-%i.env
+# 防止环境文件误将快照和对账指向不同资产。
+ExecStartPre=/usr/bin/test ${GATEWAY_WALLET_SNAPSHOT_ASSET_ID} = %i
+ExecStartPre=/usr/bin/test ${GATEWAY_RECONCILIATION_WALLET_ASSET_ID} = %i
+ExecStart=/opt/stablecoin-gateway/current/bin/gateway-wallet-snapshot
+ExecStart=/opt/stablecoin-gateway/current/bin/gateway-reconcile
+TimeoutStartSec=10min
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+Restart=no
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=

@@ -64,6 +64,21 @@ jobs:
           fi
           grep -F '缺少 GATEWAY_DATABASE_URL' <<< "$output"
 
+  systemd-controls:
+    name: Scheduled custody controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check scripts
+        run: |
+          bash -n scripts/check-systemd-controls.sh
+          sh -n scripts/testdata/controls/gateway-wallet-snapshot
+          sh -n scripts/testdata/controls/gateway-reconcile
+      - name: Verify scheduling and failure behavior using real systemd
+        run: sudo env GITHUB_ACTIONS=true bash scripts/check-systemd-controls.sh
+
   integration:
     name: PostgreSQL integration tests
     runs-on: ubuntu-24.04

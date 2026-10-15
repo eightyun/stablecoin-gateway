@@ -119,12 +119,35 @@ Startup order:
 
 3. Complete testnet preflight and provision reviewed asset/merchant/deposit-address/custody-wallet records as described below. Deploy the screening adapter and isolated testnet signer. Missing valid screening evidence must block processing, not default to allow. Initial asset/merchant provisioning still requires operator-reviewed database writes; there is no one-click onboarding or production-wallet installer.
 4. Create a separate system account `gateway-<instance>` and `/etc/stablecoin-gateway/<instance>.env` (0600) per process using `.env.example` and the relevant sections below. Assign unique `GATEWAY_OBSERVABILITY_ADDR` ports on a shared host. Enable `indexer`, `deposit-screening-worker`, `deposit-worker`, `payout-screening-worker`, `payout-signing-worker`, `payout-execution-worker`, and `webhook-worker`, for example `systemctl enable --now stablecoin-gateway@indexer`. Payouts still require valid screening and manual approval.
-5. For sweeping, also enable `sweep-screening-worker`, `sweep-planner`, `sweep-signing-worker`, and `sweep-execution-worker`. Schedule `gateway-wallet-snapshot` followed by `gateway-reconcile` with the appropriate asset settings, frequency, timeout, failure alerting, and no overlapping runs. These are one-shot commands; do not apply the auto-restart service template to them.
+5. For sweeping, also enable `sweep-screening-worker`, `sweep-planner`, `sweep-signing-worker`, and `sweep-execution-worker`. Use the dedicated timer below to serialize `gateway-wallet-snapshot` and `gateway-reconcile`. These are one-shot commands; do not apply the auto-restart service template to them.
 6. Connect Prometheus, alert delivery, and Grafana. Check worker `/readyz`, actual task progress, and snapshot freshness. API `/healthz` checks HTTP liveness only, not database readiness or payment acceptance. Expose the API through a TLS reverse proxy; restrict observability ports to monitoring networks.
 
-For upgrades, close merchant write ingress, pause new payout creation/approval and sweep planning, gracefully stop affected processes, and record in-flight txIDs. Preserve consistent backups of the database, encryption-key versions, and signer idempotency state. Rehearse the target migration and `gateway-recovery-audit` on an isolated restored database, then migrate the stopped production deployment, switch `current`, and start in stages. Verify task takeover and reconciliation before reopening ingress. Roll back executables only after confirming schema/message backward compatibility; otherwise use approved restore/forward repair. Never automatically downgrade the database, discard signer records, or recreate in-flight transactions.
+For upgrades, close merchant write ingress, pause new payout creation/approval and sweep planning, disable the custody-controls timer and stop its active oneshot, gracefully stop affected processes, and record in-flight txIDs. Preserve consistent backups of the database, encryption-key versions, and signer idempotency state. Rehearse the target migration and `gateway-recovery-audit` on an isolated restored database, then migrate the stopped production deployment, switch `current`, and start in stages. Verify task takeover and reconciliation before reopening ingress. Roll back executables only after confirming schema/message backward compatibility; otherwise use approved restore/forward repair. Never automatically downgrade the database, discard signer records, or recreate in-flight transactions.
 
 Sustained-run acceptance remains separate: pin a commit/configuration/testnet wallet and observe real testnet deposits, payouts, sweeps, scheduled snapshots/reconciliation, restarts, and alert delivery over an agreed window. Record duplicate-settlement checks, unexplained differences, backlog, and error rates. Passing a package build or health probe does not complete that acceptance.
+
+### Scheduled Wallet Snapshots and Reconciliation
+
+[`stablecoin-gateway-controls@.service`](configs/systemd/stablecoin-gateway-controls@.service) and its [timer](configs/systemd/stablecoin-gateway-controls@.timer) serialize finalized wallet capture, ledger-integrity checks, and wallet reconciliation for each asset. A failed snapshot command prevents reconciliation. Both asset environment variables must match the instance name or startup fails. Total execution is bounded to ten minutes with a 45-second shutdown grace period. No private keys or transaction broadcasts are involved.
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin gateway-controls
+sudo install -m 0644 /opt/stablecoin-gateway/current/configs/systemd/stablecoin-gateway-controls@.service /opt/stablecoin-gateway/current/configs/systemd/stablecoin-gateway-controls@.timer /etc/systemd/system/
+sudo install -m 0600 /opt/stablecoin-gateway/current/configs/systemd/controls.env.example /etc/stablecoin-gateway/controls-usdt-tron-nile.env
+# Securely fill database/node settings; do not override the two asset variables
+sudo systemctl daemon-reload
+# Review the first run, reconciliation cases, and metrics before enabling the timer
+sudo systemctl start stablecoin-gateway-controls@usdt-tron-nile.service
+sudo journalctl -u stablecoin-gateway-controls@usdt-tron-nile.service -n 100 --no-pager
+sudo systemctl enable --now stablecoin-gateway-controls@usdt-tron-nile.timer
+systemctl list-timers 'stablecoin-gateway-controls@*'
+```
+
+The example asset must already exist with active custody wallets. Grant the account only required business/wallet reads and snapshot/reconciliation writes, not signing or payout capabilities. Enable a given database/asset timer on one scheduler host only: mutual exclusion is local to a unit, not a distributed lock. Use the same `.service` for manual reruns rather than launching overlapping commands outside systemd.
+
+The initial trigger is two minutes after boot and may execute immediately when enabled. Subsequent runs wait five minutes after completion, plus up to 30 seconds of jitter, without catch-up or overlapping queues. Failures retain unit status and journal evidence; the next timer activation retries. Reconciliation findings create cases and WARN logs, but `gateway-reconcile` may still exit zero. **Unit success does not imply zero financial discrepancies.** Check case metrics and freshness alerts as well, adjusting default daily thresholds to the actual schedule. Ledger-integrity checks remain global; wallet reconciliation targets the bound asset only.
+
+For maintenance, first `systemctl disable --now stablecoin-gateway-controls@usdt-tron-nile.timer`, then `systemctl stop stablecoin-gateway-controls@usdt-tron-nile.service`. Stopping a timer does not stop an active check. CI validates ordering, fail-closed behavior, asset mismatch, timeouts, and non-overlapping cycles using real systemd on an ephemeral Linux runner. Its fixture processes access no database or wallet and do not constitute live financial sustained-run acceptance.
 
 ## Local Development
 

@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+printf 'phase=reconcile-start\n'
+sleep "${CONTROL_TEST_RECONCILE_DELAY:-0}"
+printf 'phase=reconcile-complete\n'
