@@ -65,6 +65,67 @@
 
 v0.1 不要求 AWS 账号或真实 AWS KMS 验收。KMS 适配器和验收命令是可选部署能力，未使用 AWS 不阻塞首版开发与发布；核心验收使用现有自动测试和隔离测试网 signer。生产部署的签名后端由部署方选择，并验证实际采用的实现。
 
+## 构建发布包与部署
+
+目前分发包用于测试网候选版本，不代表已完成主网安全验收。支持 Linux/macOS 的 amd64、arm64；构建需要 Git 和 Go，安装后运行不需要 Go 工具链。
+
+```bash
+# 在已提交且干净的源码目录执行；不指定版本时使用 snapshot-<commit>
+go run ./tools/release -target linux/amd64 -version v0.1.0-rc.1
+cd build/release
+sha256sum --check stablecoin-gateway_v0.1.0-rc.1_linux_amd64.tar.gz.sha256
+# macOS 使用 shasum -a 256 --check 对应的 .sha256 文件
+tar -xzf stablecoin-gateway_v0.1.0-rc.1_linux_amd64.tar.gz
+```
+
+`v0.1.0-rc.1` 只是示例，以上命令不会创建 Git tag 或 GitHub Release。也可在 Actions 手动运行 **Build release packages**，下载对应平台的 Artifact（保留 14 天）；该工作流只有读取仓库和上传 Artifact 的权限，不发布正式版本。下载后先解开 Actions 的外层 ZIP，再校验里面的 `.tar.gz`。
+
+每个包包含全部 `gateway-*` 命令、嵌入迁移、两份 README、许可证、安全策略、配置样例和 `manifest.json`。Manifest 记录版本、Git 提交、提交时间、dirty 状态、Go 版本、目标平台以及各文件 SHA-256；可用 `go version -m bin/gateway-api` 检查程序内的 VCS 提交。归档使用固定时间和文件顺序，同一干净提交、工具链和目标平台可重复构建。工具拒绝覆盖已有产物；本地调试可用 `-allow-dirty`，文件名会增加 `_dirty`，不能用于正式发布。SHA-256 仅验证内容一致性，不替代发布者签名、安全审计或可信下载来源。
+
+仅固定白名单的公开文件会进入包，实际 `.env`、私钥、签名状态及本地 `docs/` 不打包。不要修改 `.env.example` 填入真实凭据；复制到仓库外，再按进程只配置必需项。
+
+### 单机测试网部署（Linux + systemd）
+
+以下假设使用受支持的 Linux/systemd、独立 PostgreSQL、可信节点和已配置的筛查/隔离 signer。先完成备份策略、数据库账号最小权限和网络访问控制；远程 PostgreSQL 使用证书验证，不照搬本地 `sslmode=disable`。迁移账号与业务账号分离。systemd 模板只用于 API 和无本地私钥的长运行 Worker，不用于 signer、迁移或定时任务。
+
+```bash
+# 用部署账号执行；REPLACE_VERSION 改为实际解包目录名
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin gateway-api
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin gateway-monitor
+sudo install -d -m 0755 /opt/stablecoin-gateway/releases
+sudo cp -R stablecoin-gateway_REPLACE_VERSION_linux_amd64 /opt/stablecoin-gateway/releases/
+sudo ln -s /opt/stablecoin-gateway/releases/stablecoin-gateway_REPLACE_VERSION_linux_amd64 /opt/stablecoin-gateway/current
+sudo install -d -m 0700 /etc/stablecoin-gateway
+sudo install -m 0600 /opt/stablecoin-gateway/current/configs/systemd/api.env.example /etc/stablecoin-gateway/api.env
+sudo install -m 0600 /opt/stablecoin-gateway/current/configs/systemd/monitor.env.example /etc/stablecoin-gateway/monitor.env
+sudo install -m 0644 /opt/stablecoin-gateway/current/configs/systemd/stablecoin-gateway@.service /etc/systemd/system/
+# 使用安全编辑器填写两个 env 文件；systemd 文件不使用 export，不做 Shell 展开
+```
+
+首次安装时 `current` 必须不存在；不要覆盖已有版本目录或把运行账号设为该目录所有者。配置目录和环境文件由 root 管理。API 密钥加密主密钥只生成一次并可靠备份；signer 密钥和 TLS 凭据隔离配置，不向 API 注入。
+
+启动顺序：
+
+1. 使用部署方的安全凭据注入方式，为独立命令 `bin/gateway-migrate up` 配置迁移账号的 `GATEWAY_DATABASE_URL`；运行后用 `bin/gateway-migrate version` 核对版本且不能 dirty。迁移已经嵌入程序，无需额外 SQL 目录。
+2. 先启动 API 与监控，验证基础连接；此时尚未构成可用的完整收付链路：
+
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now stablecoin-gateway@api stablecoin-gateway@monitor
+   curl --fail http://127.0.0.1:8080/healthz
+   curl --fail http://127.0.0.1:9090/readyz
+   sudo journalctl -u stablecoin-gateway@api -u stablecoin-gateway@monitor -n 50 --no-pager
+   ```
+
+3. 按后文完成测试网预检、资产/商户/充值地址和托管钱包准备，部署筛查适配器及独立测试网 signer；未提供有效筛查结果时系统应阻断资金操作，而不是改成默认 allow。首次资产/商户初始化仍需运营方审查并写入数据库，当前没有一键开户或自动生成生产钱包的安装器。
+4. 为每个进程创建独立系统账号 `gateway-<实例名>`，再单独创建 `/etc/stablecoin-gateway/<实例名>.env`（0600），按 `.env.example` 和后文配置必需项，同机 `GATEWAY_OBSERVABILITY_ADDR` 必须端口唯一。启用 `indexer`、`deposit-screening-worker`、`deposit-worker`、`payout-screening-worker`、`payout-signing-worker`、`payout-execution-worker` 和 `webhook-worker`；例如 `systemctl enable --now stablecoin-gateway@indexer`。出款仍需有效筛查和人工审批。
+5. 需要归集时另启用 `sweep-screening-worker`、`sweep-planner`、`sweep-signing-worker`、`sweep-execution-worker`。通过调度器串行执行 `gateway-wallet-snapshot` 后再执行 `gateway-reconcile`，配置对应资产、执行周期、超时和失败告警，禁止重叠运行；这两个命令不是常驻 Worker，不能套用自动重启模板。
+6. 接入 Prometheus、告警通知与 Grafana，核对 Worker `/readyz`、任务推进与最近快照时间。API `/healthz` 只代表 HTTP 存活，不是数据库就绪或支付业务验收。API 对外访问需经过 TLS 反向代理；观测端口仅向监控网络开放。
+
+升级时先关闭商户写入口，暂停创建/审批新出款及归集，优雅停止相关进程并记录在途 txID；保留数据库、密钥版本及签名幂等存储的一致备份。先在隔离恢复库执行目标版本迁移和 `gateway-recovery-audit`，再停写迁移正式库，切换 `current` 并分阶段启动、核对任务接管和对账后开放入口。仅在 schema 和消息格式确认向后兼容时允许切回旧程序；不兼容时走经审批的恢复/前向修复，不自动降级数据库、不丢弃签名记录或重建在途交易。
+
+持续运行验收尚需单独进行：固定提交、配置版本和测试网钱包，至少覆盖约定观察窗口内的真实收付、归集、定时快照/对账、重启与告警送达，记录零重复结算、未解释差异、积压和错误率。一次打包或探针通过不等于这项验收完成。
+
 ## 本地运行
 
 要求：
@@ -82,15 +143,11 @@ export GATEWAY_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway?
 export GATEWAY_API_KEY_ENCRYPTION_KEYS='{"v1":"替换为上一步生成并持久保存的Base64密钥"}'
 export GATEWAY_API_KEY_ACTIVE_VERSION='v1'
 
-go run ./cmd/gateway-api
-curl http://127.0.0.1:8080/healthz
-```
-
-数据库迁移：
-
-```bash
-export GATEWAY_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway?sslmode=disable'
+# 先独立完成数据库迁移，再启动 API
 go run ./cmd/gateway-migrate up
+go run ./cmd/gateway-api
+# 在另一终端检查存活
+curl http://127.0.0.1:8080/healthz
 ```
 
 采集指定资产下全部已登记活动托管钱包的已固化 TRC20 余额快照：

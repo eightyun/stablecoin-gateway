@@ -65,6 +65,67 @@ Not yet implemented: external fiat/PSP balance adapters and reconciliation, and 
 
 v0.1 requires neither an AWS account nor live AWS KMS acceptance. The KMS adapter and acceptance command are optional deployment capabilities; not using AWS does not block development or release. Core acceptance uses the existing automated tests and isolated testnet signer. Production deployers choose their signing backend and validate the implementation they actually use.
 
+## Release Packages and Deployment
+
+Packages currently target testnet release candidates, not approved mainnet deployments. Supported targets are Linux/macOS on amd64/arm64. Building requires Git and Go; running an installed package does not require Go.
+
+```bash
+# Run from a clean, committed checkout; omitted version defaults to snapshot-COMMIT
+go run ./tools/release -target linux/amd64 -version v0.1.0-rc.1
+cd build/release
+sha256sum --check stablecoin-gateway_v0.1.0-rc.1_linux_amd64.tar.gz.sha256
+# On macOS use shasum -a 256 --check with the corresponding .sha256 file
+tar -xzf stablecoin-gateway_v0.1.0-rc.1_linux_amd64.tar.gz
+```
+
+`v0.1.0-rc.1` is an example, not an existing release. These commands do not create a Git tag or GitHub Release. Alternatively, manually run **Build release packages** in Actions and download the platform Artifact (retained for 14 days). That workflow can read source and upload Artifacts, but cannot publish a Release. Extract the outer Actions ZIP before checking the enclosed `.tar.gz`.
+
+Each package includes all `gateway-*` commands, embedded migrations, both READMEs, license, security policy, public configuration examples, and `manifest.json`. The manifest records version, Git revision, commit time, dirty state, Go version, target, and each file's SHA-256. `go version -m bin/gateway-api` displays embedded VCS metadata. Archive timestamps and ordering are fixed; a clean commit, identical toolchain, and target produce repeatable packages. Existing outputs are never overwritten. Local-only `-allow-dirty` builds use a `_dirty` filename suffix and must not be published as releases. Checksums detect content changes; they do not replace publisher signatures, an audit, or a trusted download source.
+
+Only explicitly allowlisted public files are packaged. Actual `.env` files, private keys, signer state, and local `docs/` are excluded. Never put credentials in `.env.example`; copy templates outside the repository and inject only the settings each process needs.
+
+### Single-host Testnet Deployment (Linux + systemd)
+
+These steps assume supported Linux/systemd, separate PostgreSQL, trusted nodes, and configured screening/isolated signer services. Establish backups, least-privilege database roles, and network controls first. Validate certificates for remote PostgreSQL; local `sslmode=disable` examples are not remote deployment defaults. Keep migration and runtime roles separate. The service template is for the API and long-running workers without local private keys, not signers, migrations, or scheduled commands.
+
+```bash
+# Run as the deployment operator; replace REPLACE_VERSION with the extracted directory version
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin gateway-api
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin gateway-monitor
+sudo install -d -m 0755 /opt/stablecoin-gateway/releases
+sudo cp -R stablecoin-gateway_REPLACE_VERSION_linux_amd64 /opt/stablecoin-gateway/releases/
+sudo ln -s /opt/stablecoin-gateway/releases/stablecoin-gateway_REPLACE_VERSION_linux_amd64 /opt/stablecoin-gateway/current
+sudo install -d -m 0700 /etc/stablecoin-gateway
+sudo install -m 0600 /opt/stablecoin-gateway/current/configs/systemd/api.env.example /etc/stablecoin-gateway/api.env
+sudo install -m 0600 /opt/stablecoin-gateway/current/configs/systemd/monitor.env.example /etc/stablecoin-gateway/monitor.env
+sudo install -m 0644 /opt/stablecoin-gateway/current/configs/systemd/stablecoin-gateway@.service /etc/systemd/system/
+# Fill both env files using a secure editor; no export or shell expansion in systemd EnvironmentFile
+```
+
+On first installation, `current` must not exist. Never overwrite a version directory or give the runtime user ownership of it. Keep configuration directories and environment files root-managed. Generate and securely back up the API encryption master key once. Configure signer keys/TLS separately; never inject signer credentials into the API.
+
+Startup order:
+
+1. Inject the migration role's `GATEWAY_DATABASE_URL` securely into the standalone `bin/gateway-migrate up`, then check `bin/gateway-migrate version`; dirty migrations are not acceptable. SQL migrations are embedded in the executable.
+2. Start the API and monitor to validate basic connectivity; they alone do not provide a complete payment pipeline:
+
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now stablecoin-gateway@api stablecoin-gateway@monitor
+   curl --fail http://127.0.0.1:8080/healthz
+   curl --fail http://127.0.0.1:9090/readyz
+   sudo journalctl -u stablecoin-gateway@api -u stablecoin-gateway@monitor -n 50 --no-pager
+   ```
+
+3. Complete testnet preflight and provision reviewed asset/merchant/deposit-address/custody-wallet records as described below. Deploy the screening adapter and isolated testnet signer. Missing valid screening evidence must block processing, not default to allow. Initial asset/merchant provisioning still requires operator-reviewed database writes; there is no one-click onboarding or production-wallet installer.
+4. Create a separate system account `gateway-<instance>` and `/etc/stablecoin-gateway/<instance>.env` (0600) per process using `.env.example` and the relevant sections below. Assign unique `GATEWAY_OBSERVABILITY_ADDR` ports on a shared host. Enable `indexer`, `deposit-screening-worker`, `deposit-worker`, `payout-screening-worker`, `payout-signing-worker`, `payout-execution-worker`, and `webhook-worker`, for example `systemctl enable --now stablecoin-gateway@indexer`. Payouts still require valid screening and manual approval.
+5. For sweeping, also enable `sweep-screening-worker`, `sweep-planner`, `sweep-signing-worker`, and `sweep-execution-worker`. Schedule `gateway-wallet-snapshot` followed by `gateway-reconcile` with the appropriate asset settings, frequency, timeout, failure alerting, and no overlapping runs. These are one-shot commands; do not apply the auto-restart service template to them.
+6. Connect Prometheus, alert delivery, and Grafana. Check worker `/readyz`, actual task progress, and snapshot freshness. API `/healthz` checks HTTP liveness only, not database readiness or payment acceptance. Expose the API through a TLS reverse proxy; restrict observability ports to monitoring networks.
+
+For upgrades, close merchant write ingress, pause new payout creation/approval and sweep planning, gracefully stop affected processes, and record in-flight txIDs. Preserve consistent backups of the database, encryption-key versions, and signer idempotency state. Rehearse the target migration and `gateway-recovery-audit` on an isolated restored database, then migrate the stopped production deployment, switch `current`, and start in stages. Verify task takeover and reconciliation before reopening ingress. Roll back executables only after confirming schema/message backward compatibility; otherwise use approved restore/forward repair. Never automatically downgrade the database, discard signer records, or recreate in-flight transactions.
+
+Sustained-run acceptance remains separate: pin a commit/configuration/testnet wallet and observe real testnet deposits, payouts, sweeps, scheduled snapshots/reconciliation, restarts, and alert delivery over an agreed window. Record duplicate-settlement checks, unexplained differences, backlog, and error rates. Passing a package build or health probe does not complete that acceptance.
+
 ## Local Development
 
 Requirements:
@@ -82,15 +143,11 @@ export GATEWAY_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway?
 export GATEWAY_API_KEY_ENCRYPTION_KEYS='{"v1":"REPLACE_WITH_THE_PERSISTED_BASE64_KEY"}'
 export GATEWAY_API_KEY_ACTIVE_VERSION='v1'
 
-go run ./cmd/gateway-api
-curl http://127.0.0.1:8080/healthz
-```
-
-Apply database migrations:
-
-```bash
-export GATEWAY_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway?sslmode=disable'
+# Apply migrations independently before starting the API
 go run ./cmd/gateway-migrate up
+go run ./cmd/gateway-api
+# Check liveness from another terminal
+curl http://127.0.0.1:8080/healthz
 ```
 
 Capture finalized TRC20 balances for every registered active custody wallet of an asset:

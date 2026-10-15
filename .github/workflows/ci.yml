@@ -46,6 +46,23 @@ jobs:
         run: go test -count=1 ./...
       - name: Build commands
         run: go build ./cmd/...
+      - name: Smoke-test Linux release package
+        shell: bash
+        run: |
+          go run ./tools/release -target linux/amd64
+          (cd build/release && sha256sum --check *.sha256)
+          archive=(build/release/*.tar.gz)
+          mkdir -p "$RUNNER_TEMP/gateway-package"
+          tar -xzf "${archive[0]}" -C "$RUNNER_TEMP/gateway-package"
+          package=("$RUNNER_TEMP"/gateway-package/stablecoin-gateway_*)
+          jq -e --arg commit "$GITHUB_SHA" '.commit == $commit and .dirty == false and .target == "linux/amd64"' "${package[0]}/manifest.json"
+          go version -m "${package[0]}/bin/gateway-api" | grep -F "vcs.revision=$GITHUB_SHA"
+          go version -m "${package[0]}/bin/gateway-api" | grep -F 'vcs.modified=false'
+          if output="$(env -u GATEWAY_DATABASE_URL "${package[0]}/bin/gateway-migrate" version 2>&1)"; then
+            echo 'Migration unexpectedly accepted missing configuration'
+            exit 1
+          fi
+          grep -F '缺少 GATEWAY_DATABASE_URL' <<< "$output"
 
   integration:
     name: PostgreSQL integration tests

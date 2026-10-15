@@ -1,0 +1,56 @@
+name: Build release packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version (empty uses snapshot-COMMIT; does not publish a Release)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package ${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [linux, darwin]
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.23.x
+          cache-dependency-path: go.sum
+      - name: Verify modules and packaging tests
+        run: |
+          go mod verify
+          go test -count=1 ./tools/release
+      - name: Build offline package
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}
+          PACKAGE_TARGET: ${{ matrix.os }}/${{ matrix.arch }}
+        run: go run ./tools/release -version "$PACKAGE_VERSION" -target "$PACKAGE_TARGET"
+      - name: Verify archive checksum
+        working-directory: build/release
+        run: sha256sum --check *.sha256
+      - name: Upload packages (not a published Release)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: stablecoin-gateway-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            build/release/*.tar.gz
+            build/release/*.sha256
+          if-no-files-found: error
+          retention-days: 14
